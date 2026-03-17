@@ -1,0 +1,5 @@
+{
+  "name": "SapuAds",
+  "description": "A YouTube-like video streaming platform with built-in ad-blocking features for a clean viewing experience.",
+  "requestFramePermissions": []
+}
