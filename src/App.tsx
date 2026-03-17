@@ -24,12 +24,13 @@ import {
   Loader2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { getYouTubeVideos, Video } from './types';
+import { getYouTubeVideos, Video, Channel } from './types';
 
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || '';
 
 export default function App() {
   const [videos, setVideos] = useState<Video[]>([]);
+  const [currentChannel, setCurrentChannel] = useState<Channel | null>(null);
   const [selectedVideo, setSelectedVideo] = useState<Video | null>(null);
   const [isAdBlockActive, setIsAdBlockActive] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -46,12 +47,13 @@ export default function App() {
     }
     setIsLoading(true);
     setApiError(null);
-    const { videos: results, error } = await getYouTubeVideos(query, YOUTUBE_API_KEY);
+    const { videos: results, channel, error } = await getYouTubeVideos(query, YOUTUBE_API_KEY);
     
     if (error) {
       setApiError(error);
     } else {
       setVideos(results);
+      setCurrentChannel(channel || null);
     }
     setIsLoading(false);
   };
@@ -68,9 +70,27 @@ export default function App() {
     }
   }, [isAdBlockActive]);
 
+  const extractVideoId = (url: string) => {
+    const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+    const match = url.match(regExp);
+    return (match && match[2].length === 11) ? match[2] : null;
+  };
+
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    fetchVideos(searchQuery);
+    if (!searchQuery.trim()) return;
+    
+    const videoId = extractVideoId(searchQuery);
+    if (videoId) {
+      // If it's a URL, we can just set the video state directly with minimal info
+      // or search for it. For simplicity and better UX, let's search for it
+      // so we get full metadata.
+      fetchVideos(searchQuery);
+    } else {
+      setSelectedVideo(null);
+      setCurrentChannel(null);
+      fetchVideos(searchQuery);
+    }
   };
 
   const handleChannelClick = (e: React.MouseEvent, channelName: string) => {
@@ -95,6 +115,7 @@ export default function App() {
             className="flex items-center gap-1 cursor-pointer" 
             onClick={() => {
               setSelectedVideo(null);
+              setCurrentChannel(null);
               fetchVideos();
             }}
           >
@@ -152,8 +173,9 @@ export default function App() {
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar */}
         <aside className={`${isSidebarOpen ? 'w-64' : 'w-20'} hidden md:flex flex-col gap-2 p-2 overflow-y-auto transition-all duration-300 border-r border-white/5`}>
-          <SidebarItem icon={<Home size={22} />} label="Home" active={!selectedVideo} onClick={() => {
+          <SidebarItem icon={<Home size={22} />} label="Home" active={!selectedVideo && !currentChannel} onClick={() => {
             setSelectedVideo(null);
+            setCurrentChannel(null);
             fetchVideos();
           }} isOpen={isSidebarOpen} />
           <SidebarItem icon={<Compass size={22} />} label="Explore" isOpen={isSidebarOpen} />
@@ -223,138 +245,192 @@ export default function App() {
             </div>
           ) : (
             <AnimatePresence mode="wait">
-              {selectedVideo ? (
-                <motion.div 
-                  key="video-player"
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: 20 }}
-                  className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6"
-                >
-                  <div className="lg:col-span-2 flex flex-col gap-4">
-                    <div className="aspect-video bg-black rounded-xl overflow-hidden relative group shadow-2xl">
-                      <iframe 
-                        src={`${selectedVideo.videoUrl}?autoplay=1&rel=0&modestbranding=1&iv_load_policy=3`}
-                        title={selectedVideo.title}
-                        className="w-full h-full border-0"
-                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                        allowFullScreen
-                      />
-                      {isAdBlockActive && (
-                        <div className="absolute top-4 left-4 bg-emerald-500/90 text-white px-3 py-1 rounded-full text-xs font-bold flex items-center gap-2 backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-                          <ShieldCheck size={14} />
-                          ADS BLOCKED BY SAPUADS
-                        </div>
-                      )}
-                    </div>
-                    
-                    <div>
-                      <h1 className="text-xl font-bold mb-2" dangerouslySetInnerHTML={{ __html: selectedVideo.title }} />
-                      <div className="flex flex-wrap items-center justify-between gap-4">
-                        <div className="flex items-center gap-3">
-                          <img 
-                            src={selectedVideo.channelAvatar} 
-                            alt={selectedVideo.channelName} 
-                            className="w-10 h-10 rounded-full"
-                            referrerPolicy="no-referrer"
+                  {selectedVideo ? (
+                    <motion.div 
+                      key="video-player"
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 20 }}
+                      className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6"
+                    >
+                      <div className="lg:col-span-2 flex flex-col gap-4">
+                        <div className="aspect-video bg-black rounded-xl overflow-hidden relative group shadow-2xl">
+                          <iframe 
+                            src={`${selectedVideo.videoUrl}?autoplay=1&rel=0&modestbranding=1&iv_load_policy=3`}
+                            title={selectedVideo.title}
+                            className="w-full h-full border-0"
+                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                            allowFullScreen
                           />
-                          <div 
-                            className="cursor-pointer group/channel"
-                            onClick={(e) => handleChannelClick(e, selectedVideo.channelName)}
-                          >
-                            <p className="font-bold group-hover/channel:text-blue-400 transition-colors">{selectedVideo.channelName}</p>
-                            <p className="text-xs text-white/60">YouTube Creator</p>
-                          </div>
-                          <button className="ml-4 bg-white text-black px-4 py-2 rounded-full font-bold text-sm hover:bg-white/90 transition-colors">
-                            Subscribe
-                          </button>
+                          {isAdBlockActive && (
+                            <div className="absolute top-4 left-4 bg-emerald-500/90 text-white px-3 py-1 rounded-full text-xs font-bold flex items-center gap-2 backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                              <ShieldCheck size={14} />
+                              ADS BLOCKED BY SAPUADS
+                            </div>
+                          )}
                         </div>
                         
-                        <div className="flex items-center gap-2">
-                          <div className="flex items-center bg-white/10 rounded-full overflow-hidden">
-                            <button className="flex items-center gap-2 px-4 py-2 hover:bg-white/20 transition-colors border-r border-white/10">
-                              <ThumbsUp size={18} />
-                              <span className="text-sm font-medium">Like</span>
-                            </button>
-                            <button className="px-4 py-2 hover:bg-white/20 transition-colors">
-                              <ThumbsUp size={18} className="rotate-180" />
-                            </button>
+                        <div>
+                          <h1 className="text-xl font-bold mb-2" dangerouslySetInnerHTML={{ __html: selectedVideo.title }} />
+                          <div className="flex flex-wrap items-center justify-between gap-4">
+                            <div className="flex items-center gap-3">
+                              <img 
+                                src={selectedVideo.channelAvatar} 
+                                alt={selectedVideo.channelName} 
+                                className="w-10 h-10 rounded-full cursor-pointer hover:opacity-80 transition-opacity"
+                                referrerPolicy="no-referrer"
+                                onClick={(e) => handleChannelClick(e, selectedVideo.channelName)}
+                              />
+                              <div 
+                                className="cursor-pointer group/channel"
+                                onClick={(e) => handleChannelClick(e, selectedVideo.channelName)}
+                              >
+                                <p className="font-bold group-hover/channel:text-blue-400 transition-colors">{selectedVideo.channelName}</p>
+                                <p className="text-xs text-white/60">YouTube Creator</p>
+                              </div>
+                              <button className="ml-4 bg-white text-black px-4 py-2 rounded-full font-bold text-sm hover:bg-white/90 transition-colors">
+                                Subscribe
+                              </button>
+                            </div>
+                            
+                            <div className="flex items-center gap-2">
+                              <div className="flex items-center bg-white/10 rounded-full overflow-hidden">
+                                <button className="flex items-center gap-2 px-4 py-2 hover:bg-white/20 transition-colors border-r border-white/10">
+                                  <ThumbsUp size={18} />
+                                  <span className="text-sm font-medium">Like</span>
+                                </button>
+                                <button className="px-4 py-2 hover:bg-white/20 transition-colors">
+                                  <ThumbsUp size={18} className="rotate-180" />
+                                </button>
+                              </div>
+                              <button className="flex items-center gap-2 bg-white/10 px-4 py-2 rounded-full hover:bg-white/20 transition-colors">
+                                <Share2 size={18} />
+                                <span className="text-sm font-medium">Share</span>
+                              </button>
+                              <button className="p-2 bg-white/10 rounded-full hover:bg-white/20 transition-colors">
+                                <MoreVertical size={18} />
+                              </button>
+                            </div>
                           </div>
-                          <button className="flex items-center gap-2 bg-white/10 px-4 py-2 rounded-full hover:bg-white/20 transition-colors">
-                            <Share2 size={18} />
-                            <span className="text-sm font-medium">Share</span>
-                          </button>
-                          <button className="p-2 bg-white/10 rounded-full hover:bg-white/20 transition-colors">
-                            <MoreVertical size={18} />
-                          </button>
                         </div>
-                      </div>
-                    </div>
-
-                    <div className="bg-white/5 p-4 rounded-xl">
-                      <div className="flex gap-2 text-sm font-bold mb-1">
-                        <span>{selectedVideo.views}</span>
-                        <span>•</span>
-                        <span>Published on {selectedVideo.postedAt}</span>
-                      </div>
-                      <p className="text-sm text-white/80 whitespace-pre-wrap line-clamp-4 hover:line-clamp-none transition-all cursor-pointer">
-                        {selectedVideo.description}
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Recommendations */}
-                  <div className="flex flex-col gap-4">
-                    <h2 className="font-bold text-lg">Up Next</h2>
-                    {videos.filter(v => v.id !== selectedVideo.id).map(video => (
-                      <div 
-                        key={video.id} 
-                        className="flex gap-3 cursor-pointer group"
-                        onClick={() => setSelectedVideo(video)}
-                      >
-                        <div className="relative w-40 h-24 flex-shrink-0 bg-white/5 rounded-lg overflow-hidden">
-                          <img 
-                            src={video.thumbnail} 
-                            alt={video.title} 
-                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                            referrerPolicy="no-referrer"
-                          />
-                          <span className="absolute bottom-1 right-1 bg-black/80 text-[10px] font-bold px-1 rounded">
-                            {video.duration}
-                          </span>
-                        </div>
-                        <div className="flex flex-col gap-1">
-                          <h3 className="text-sm font-bold line-clamp-2 leading-tight group-hover:text-blue-400 transition-colors" dangerouslySetInnerHTML={{ __html: video.title }} />
-                          <p 
-                            className="text-xs text-white/60 hover:text-white transition-colors cursor-pointer"
-                            onClick={(e) => handleChannelClick(e, video.channelName)}
-                          >
-                            {video.channelName}
+    
+                        <div className="bg-white/5 p-4 rounded-xl">
+                          <div className="flex gap-2 text-sm font-bold mb-1">
+                            <span>{selectedVideo.views}</span>
+                            <span>•</span>
+                            <span>Published on {selectedVideo.postedAt}</span>
+                          </div>
+                          <p className="text-sm text-white/80 whitespace-pre-wrap line-clamp-4 hover:line-clamp-none transition-all cursor-pointer">
+                            {selectedVideo.description}
                           </p>
-                          <p className="text-xs text-white/60">{video.views} • {video.postedAt}</p>
                         </div>
                       </div>
-                    ))}
-                  </div>
-                </motion.div>
-              ) : (
-                <motion.div 
-                  key="video-grid"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-4 gap-y-8"
-                >
-                  {videos.map(video => (
-                    <VideoCard 
-                      key={video.id} 
-                      video={video} 
-                      onClick={() => setSelectedVideo(video)} 
-                      onChannelClick={handleChannelClick}
-                    />
-                  ))}
-                </motion.div>
-              )}
+    
+                      {/* Recommendations */}
+                      <div className="flex flex-col gap-4">
+                        <h2 className="font-bold text-lg">Up Next</h2>
+                        {videos.filter(v => v.id !== selectedVideo.id).map(video => (
+                          <div 
+                            key={video.id} 
+                            className="flex gap-3 cursor-pointer group"
+                            onClick={() => setSelectedVideo(video)}
+                          >
+                            <div className="relative w-40 h-24 flex-shrink-0 bg-white/5 rounded-lg overflow-hidden">
+                              <img 
+                                src={video.thumbnail} 
+                                alt={video.title} 
+                                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                referrerPolicy="no-referrer"
+                              />
+                              <span className="absolute bottom-1 right-1 bg-black/80 text-[10px] font-bold px-1 rounded">
+                                {video.duration}
+                              </span>
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              <h3 className="text-sm font-bold line-clamp-2 leading-tight group-hover:text-blue-400 transition-colors" dangerouslySetInnerHTML={{ __html: video.title }} />
+                              <p 
+                                className="text-xs text-white/60 hover:text-white transition-colors cursor-pointer"
+                                onClick={(e) => handleChannelClick(e, video.channelName)}
+                              >
+                                {video.channelName}
+                              </p>
+                              <p className="text-xs text-white/60">{video.views} • {video.postedAt}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </motion.div>
+                  ) : (
+                    <motion.div 
+                      key="video-grid"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      className="flex flex-col gap-8"
+                    >
+                      {currentChannel && (
+                        <div className="flex flex-col gap-6">
+                          {currentChannel.banner && (
+                            <div className="w-full h-32 sm:h-48 md:h-64 rounded-2xl overflow-hidden bg-white/5">
+                              <img 
+                                src={currentChannel.banner} 
+                                alt="Channel Banner" 
+                                className="w-full h-full object-cover"
+                                referrerPolicy="no-referrer"
+                              />
+                            </div>
+                          )}
+                          <div className="flex flex-col md:flex-row items-center md:items-start gap-6 px-4">
+                            <img 
+                              src={currentChannel.thumbnail} 
+                              alt={currentChannel.title} 
+                              className="w-32 h-32 md:w-40 md:h-40 rounded-full shadow-2xl"
+                              referrerPolicy="no-referrer"
+                            />
+                            <div className="flex flex-col items-center md:items-start text-center md:text-left gap-2">
+                              <h1 className="text-3xl md:text-4xl font-bold">{currentChannel.title}</h1>
+                              <div className="flex flex-wrap justify-center md:justify-start gap-2 text-white/60 text-sm">
+                                <span>{currentChannel.customUrl}</span>
+                                <span>•</span>
+                                <span>{currentChannel.subscriberCount} subscribers</span>
+                                <span>•</span>
+                                <span>{currentChannel.videoCount} videos</span>
+                              </div>
+                              <p className="text-sm text-white/80 max-w-2xl line-clamp-2 mt-2">
+                                {currentChannel.description}
+                              </p>
+                              <div className="flex gap-3 mt-4">
+                                <button className="bg-white text-black px-6 py-2 rounded-full font-bold hover:bg-white/90 transition-colors">
+                                  Subscribe
+                                </button>
+                                <button className="bg-white/10 text-white px-6 py-2 rounded-full font-bold hover:bg-white/20 transition-colors">
+                                  Join
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="border-b border-white/10 flex gap-8 px-4 overflow-x-auto scrollbar-hide">
+                            {['Home', 'Videos', 'Shorts', 'Playlists', 'Community'].map((tab, i) => (
+                              <button key={tab} className={`pb-3 text-sm font-bold whitespace-nowrap ${i === 1 ? 'border-b-2 border-white' : 'text-white/60 hover:text-white'}`}>
+                                {tab}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-4 gap-y-8">
+                        {videos.map(video => (
+                          <VideoCard 
+                            key={video.id} 
+                            video={video} 
+                            onClick={() => setSelectedVideo(video)} 
+                            onChannelClick={handleChannelClick}
+                          />
+                        ))}
+                      </div>
+                    </motion.div>
+                  )}
             </AnimatePresence>
           )}
         </main>

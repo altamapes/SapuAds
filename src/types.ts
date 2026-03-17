@@ -1,3 +1,14 @@
+export interface Channel {
+  id: string;
+  title: string;
+  customUrl: string;
+  description: string;
+  thumbnail: string;
+  banner: string;
+  subscriberCount: string;
+  videoCount: string;
+}
+
 export interface Video {
   id: string;
   title: string;
@@ -33,11 +44,19 @@ const formatViews = (views: string): string => {
   return num + " views";
 };
 
-export const getYouTubeVideos = async (query: string = 'trending', apiKey: string): Promise<{ videos: Video[], error?: string }> => {
+const formatCount = (count: string): string => {
+  const num = parseInt(count);
+  if (isNaN(num)) return "0";
+  if (num >= 1000000) return (num / 1000000).toFixed(1) + "M";
+  if (num >= 1000) return (num / 1000).toFixed(1) + "K";
+  return num.toString();
+};
+
+export const getYouTubeVideos = async (query: string = 'trending', apiKey: string): Promise<{ videos: Video[], channel?: Channel, error?: string }> => {
   try {
     // Step 1: Search for both videos and channels to find the best match
     const searchResponse = await fetch(
-      `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=50&q=${encodeURIComponent(query)}&type=video&key=${apiKey}`
+      `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=50&q=${encodeURIComponent(query)}&type=video,channel&key=${apiKey}`
     );
     const searchData = await searchResponse.json();
 
@@ -46,6 +65,37 @@ export const getYouTubeVideos = async (query: string = 'trending', apiKey: strin
     }
 
     if (!searchData.items || searchData.items.length === 0) return { videos: [] };
+
+    // Find if there's a channel that matches the query exactly
+    const matchedChannelItem = searchData.items.find((item: any) => 
+      item.id.kind === 'youtube#channel' && 
+      (item.snippet.title.toLowerCase() === query.toLowerCase() || 
+       item.snippet.channelTitle.toLowerCase() === query.toLowerCase())
+    );
+
+    let channelInfo: Channel | undefined;
+    if (matchedChannelItem) {
+      const channelDetailResponse = await fetch(
+        `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,brandingSettings&id=${matchedChannelItem.id.channelId}&key=${apiKey}`
+      );
+      const channelDetailData = await channelDetailResponse.json();
+      const channel = channelDetailData.items?.[0];
+      
+      if (channel) {
+        channelInfo = {
+          id: channel.id,
+          title: channel.snippet.title,
+          customUrl: channel.snippet.customUrl || `@${channel.snippet.title.replace(/\s+/g, '').toLowerCase()}`,
+          description: channel.snippet.description,
+          thumbnail: channel.snippet.thumbnails.medium?.url || channel.snippet.thumbnails.default?.url,
+          banner: channel.brandingSettings?.image?.bannerExternalUrl || '',
+          subscriberCount: formatCount(channel.statistics.subscriberCount),
+          videoCount: channel.statistics.videoCount
+        };
+      }
+    }
+
+    const videoItems = searchData.items.filter((item: any) => item.id.kind === 'youtube#video');
 
     // Enhanced Sort logic with scoring system
     const getScore = (item: any, q: string) => {
@@ -69,7 +119,7 @@ export const getYouTubeVideos = async (query: string = 'trending', apiKey: strin
       return score;
     };
 
-    const sortedItems = [...searchData.items].sort((a: any, b: any) => {
+    const sortedItems = [...videoItems].sort((a: any, b: any) => {
       const scoreA = getScore(a, query);
       const scoreB = getScore(b, query);
       
@@ -79,6 +129,8 @@ export const getYouTubeVideos = async (query: string = 'trending', apiKey: strin
       
       return 0; // Maintain original YouTube relevance if scores are equal
     });
+
+    if (sortedItems.length === 0) return { videos: [], channel: channelInfo };
 
     const videoIds = sortedItems.map((item: any) => item.id.videoId).join(',');
     const channelIds = [...new Set(sortedItems.map((item: any) => item.snippet.channelId))].join(',');
@@ -107,7 +159,7 @@ export const getYouTubeVideos = async (query: string = 'trending', apiKey: strin
         id: item.id,
         title: item.snippet.title,
         thumbnail: item.snippet.thumbnails.high?.url || item.snippet.thumbnails.default?.url,
-        videoUrl: `https://www.youtube.com/embed/${item.id}`,
+        videoUrl: `https://www.youtube-nocookie.com/embed/${item.id}`,
         channelName: item.snippet.channelTitle,
         channelAvatar: channelAvatars[item.snippet.channelId] || `https://picsum.photos/seed/${item.snippet.channelId}/40/40`,
         views: formatViews(item.statistics.viewCount),
@@ -122,7 +174,7 @@ export const getYouTubeVideos = async (query: string = 'trending', apiKey: strin
       .map((item: any) => videosMap.get(item.id.videoId))
       .filter(v => v !== undefined);
 
-    return { videos };
+    return { videos, channel: channelInfo };
   } catch (error) {
     console.error("Error fetching YouTube videos:", error);
     return { videos: [], error: error instanceof Error ? error.message : "Network Error" };
