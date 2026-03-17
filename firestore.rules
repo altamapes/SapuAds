@@ -67,6 +67,11 @@ service cloud.firestore {
     // Rules
     // ===============================================================
 
+    match /home_videos/{videoId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
     match /users/{userId} {
       allow read: if isOwner(userId) || isAdmin();
       allow create: if isAuthenticated() && isOwner(userId) && isValidUser(request.resource.data) && (request.resource.data.role == 'user' || isAdmin());

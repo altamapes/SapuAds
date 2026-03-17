@@ -64,7 +64,8 @@ import {
   serverTimestamp,
   getDocs,
   where,
-  updateDoc
+  updateDoc,
+  addDoc
 } from 'firebase/firestore';
 
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || '';
@@ -112,6 +113,7 @@ export default function App() {
 
 function PlVideoApp() {
   const [videos, setVideos] = useState<Video[]>([]);
+  const [homeVideos, setHomeVideos] = useState<Video[]>([]);
   const [recommendations, setRecommendations] = useState<Video[]>([]);
   const [currentChannel, setCurrentChannel] = useState<Channel | null>(null);
   const [selectedVideo, setSelectedVideo] = useState<Video | null>(null);
@@ -146,6 +148,9 @@ function PlVideoApp() {
     totalPlaylistItems: 0,
     recentUsers: [] as any[]
   });
+
+  const [newHomeVideoUrl, setNewHomeVideoUrl] = useState('');
+  const [isAddingHomeVideo, setIsAddingHomeVideo] = useState(false);
 
   const [authError, setAuthError] = useState<string | null>(null);
 
@@ -186,6 +191,31 @@ function PlVideoApp() {
   }, []);
 
   // Playlist Sync Listener
+  useEffect(() => {
+    const homeVideosRef = collection(db, 'home_videos');
+    const q = query(homeVideosRef, orderBy('addedAt', 'desc'));
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const items = snapshot.docs.map(doc => ({
+        ...doc.data(),
+        id: doc.id
+      } as unknown as Video));
+      setHomeVideos(items);
+      
+      // Update current view if we are on the home page and not searching
+      if ((activeTab === 'home' || activeTab === 'trending') && !searchQuery) {
+        setVideos(items);
+        setPlaylist(items);
+        setIsLoading(false);
+      }
+    }, (error) => {
+      console.error("Error fetching home videos:", error);
+      setIsLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, [activeTab, searchQuery]);
+
   useEffect(() => {
     if (!user) return;
 
@@ -285,11 +315,20 @@ function PlVideoApp() {
   }, [isLooping]);
 
   const fetchVideos = async (query: string = 'trending') => {
-    if (!YOUTUBE_API_KEY) {
-      console.warn("YouTube API Key is missing. Please add it to your secrets.");
+    if (query === 'trending') {
+      setVideos(homeVideos);
+      setPlaylist(homeVideos);
+      setCurrentChannel(null);
       setIsLoading(false);
       return;
     }
+
+    if (!YOUTUBE_API_KEY) {
+      console.warn("YouTube API Key is missing. Cannot search.");
+      setIsLoading(false);
+      return;
+    }
+    
     setIsLoading(true);
     setApiError(null);
     const { videos: results, channel, error } = await getYouTubeVideos(query, YOUTUBE_API_KEY);
@@ -487,6 +526,65 @@ function PlVideoApp() {
       return () => clearTimeout(timer);
     }
   }, [isAdBlockActive]);
+
+  const handleAddHomeVideo = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newHomeVideoUrl) return;
+    
+    setIsAddingHomeVideo(true);
+    const videoId = extractVideoId(newHomeVideoUrl);
+    
+    if (!videoId) {
+      console.error("Invalid YouTube URL");
+      setIsAddingHomeVideo(false);
+      return;
+    }
+
+    try {
+      let videoDetails: Video | null = null;
+      if (YOUTUBE_API_KEY) {
+        videoDetails = await getVideoDetails(videoId, YOUTUBE_API_KEY);
+      }
+      
+      if (!videoDetails) {
+        // Fallback if no API key or fetch failed
+        videoDetails = {
+          id: videoId,
+          title: "Video dari Link",
+          thumbnail: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
+          videoUrl: `https://www.youtube.com/watch?v=${videoId}`,
+          channelName: "YouTube",
+          channelId: "",
+          channelAvatar: "https://www.youtube.com/img/desktop/yt_1200.png",
+          views: "0",
+          postedAt: new Date().toISOString(),
+          duration: "0:00",
+          description: ""
+        };
+      }
+
+      await addDoc(collection(db, 'home_videos'), {
+        ...videoDetails,
+        addedAt: serverTimestamp()
+      });
+      
+      setNewHomeVideoUrl('');
+    } catch (error) {
+      console.error("Error adding home video:", error);
+    } finally {
+      setIsAddingHomeVideo(false);
+    }
+  };
+
+  const handleDeleteHomeVideo = async (videoId: string) => {
+    if (userProfile?.role !== 'admin') return;
+
+    try {
+      await deleteDoc(doc(db, 'home_videos', videoId));
+    } catch (error) {
+      console.error("Error deleting home video:", error);
+    }
+  };
 
   const extractVideoId = (url: string) => {
     if (!url) return null;
@@ -1160,6 +1258,29 @@ function PlVideoApp() {
 
                 <div>
                   <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
+                    <Plus size={20} className="text-white/40" />
+                    Add Home Video
+                  </h2>
+                  <div className="bg-white/5 rounded-2xl border border-white/10 p-4 mb-8">
+                    <form onSubmit={handleAddHomeVideo} className="flex flex-col gap-3">
+                      <input
+                        type="text"
+                        placeholder="Paste YouTube URL here..."
+                        value={newHomeVideoUrl}
+                        onChange={(e) => setNewHomeVideoUrl(e.target.value)}
+                        className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-2 text-sm focus:outline-none focus:border-blue-500 transition-colors"
+                      />
+                      <button
+                        type="submit"
+                        disabled={isAddingHomeVideo || !newHomeVideoUrl}
+                        className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold py-2 rounded-xl transition-colors text-sm flex items-center justify-center gap-2"
+                      >
+                        {isAddingHomeVideo ? 'Adding...' : 'Add to Home'}
+                      </button>
+                    </form>
+                  </div>
+
+                  <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
                     <Settings size={20} className="text-white/40" />
                     System Logs
                   </h2>
@@ -1335,27 +1456,6 @@ function PlVideoApp() {
               >
                 Coba Segarkan
               </button>
-            </div>
-          ) : !YOUTUBE_API_KEY ? (
-            <div className="h-full flex flex-col items-center justify-center gap-6 text-center max-w-md mx-auto">
-              <div className="bg-red-500/20 p-6 rounded-full">
-                <ShieldAlert size={64} className="text-red-500" />
-              </div>
-              <div>
-                <h2 className="text-2xl font-bold mb-2">API Key Required</h2>
-                <p className="text-white/60">
-                  To fetch real videos from YouTube, please add your <strong>YOUTUBE_API_KEY</strong> in the Secrets panel.
-                </p>
-              </div>
-              <div className="bg-white/5 p-4 rounded-xl border border-white/10 text-left w-full">
-                <p className="text-xs font-mono text-white/40 mb-2 uppercase tracking-widest">Instructions</p>
-                <ol className="text-sm text-white/80 list-decimal list-inside flex flex-col gap-2">
-                  <li>Go to Google Cloud Console</li>
-                  <li>Enable YouTube Data API v3</li>
-                  <li>Create an API Key</li>
-                  <li>Add it to AI Studio Secrets as <code className="bg-white/10 px-1 rounded">YOUTUBE_API_KEY</code></li>
-                </ol>
-              </div>
             </div>
           ) : (
             <AnimatePresence mode="wait">
@@ -1543,18 +1643,29 @@ function PlVideoApp() {
                         </div>
                       )}
                       
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-4 gap-y-8">
-                        {videos.map(video => (
-                          <VideoCard 
-                            key={video.id} 
-                            video={video} 
-                            onClick={() => handleVideoSelect(video)} 
-                            onChannelClick={handleChannelClick}
-                            onAddToPlaylist={() => addToPlaylist(video)}
-                            isInPlaylist={userPlaylist.some(v => v.id === video.id)}
-                          />
-                        ))}
-                      </div>
+                      {videos.length === 0 ? (
+                        <div className="col-span-full flex flex-col items-center justify-center py-20 text-white/40">
+                          <Compass size={48} className="mb-4 opacity-50" />
+                          <p className="text-lg font-medium">No videos found</p>
+                          {(activeTab === 'home' || activeTab === 'trending') && !searchQuery && userProfile?.role === 'admin' && (
+                            <p className="text-sm mt-2">Go to the Admin Dashboard to add videos to the home page.</p>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-4 gap-y-8">
+                          {videos.map(video => (
+                            <VideoCard 
+                              key={video.id} 
+                              video={video} 
+                              onClick={() => handleVideoSelect(video)} 
+                              onChannelClick={handleChannelClick}
+                              onAddToPlaylist={() => addToPlaylist(video)}
+                              isInPlaylist={userPlaylist.some(v => v.id === video.id)}
+                              onDelete={(activeTab === 'home' || activeTab === 'trending') && !searchQuery && userProfile?.role === 'admin' ? () => handleDeleteHomeVideo(video.id) : undefined}
+                            />
+                          ))}
+                        </div>
+                      )}
                     </motion.div>
                   )}
             </AnimatePresence>
@@ -1659,7 +1770,8 @@ const VideoCard: React.FC<{
   onChannelClick: (e: React.MouseEvent, name: string) => void;
   onAddToPlaylist: () => void;
   isInPlaylist: boolean;
-}> = ({ video, onClick, onChannelClick, onAddToPlaylist, isInPlaylist }) => {
+  onDelete?: () => void;
+}> = ({ video, onClick, onChannelClick, onAddToPlaylist, isInPlaylist, onDelete }) => {
   return (
     <div 
       className="flex flex-col gap-3 cursor-pointer group relative"
@@ -1688,6 +1800,17 @@ const VideoCard: React.FC<{
         >
           {isInPlaylist ? <ShieldCheck size={20} /> : <Plus size={20} />}
         </button>
+
+        {/* Delete Button (Admin only) */}
+        {onDelete && (
+          <button 
+            onClick={(e) => { e.stopPropagation(); onDelete(); }}
+            className="absolute top-2 left-2 p-2 rounded-full transition-all z-10 shadow-lg bg-red-600/80 text-white opacity-100 md:opacity-0 md:group-hover:opacity-100 hover:bg-red-600"
+            title="Delete Video"
+          >
+            <Trash2 size={20} />
+          </button>
+        )}
 
         <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
           <div className="bg-white/20 backdrop-blur-md p-3 rounded-full">
