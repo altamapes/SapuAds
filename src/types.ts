@@ -35,9 +35,9 @@ const formatViews = (views: string): string => {
 
 export const getYouTubeVideos = async (query: string = 'trending', apiKey: string): Promise<{ videos: Video[], error?: string }> => {
   try {
-    // Step 1: Search for videos
+    // Step 1: Search for both videos and channels to find the best match
     const searchResponse = await fetch(
-      `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=24&q=${encodeURIComponent(query)}&type=video&key=${apiKey}`
+      `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=50&q=${encodeURIComponent(query)}&type=video&key=${apiKey}`
     );
     const searchData = await searchResponse.json();
 
@@ -47,10 +47,43 @@ export const getYouTubeVideos = async (query: string = 'trending', apiKey: strin
 
     if (!searchData.items || searchData.items.length === 0) return { videos: [] };
 
-    const videoIds = searchData.items.map((item: any) => item.id.videoId).join(',');
-    const channelIds = [...new Set(searchData.items.map((item: any) => item.snippet.channelId))].join(',');
+    // Enhanced Sort logic with scoring system
+    const getScore = (item: any, q: string) => {
+      const title = item.snippet.title.toLowerCase();
+      const channel = item.snippet.channelTitle.toLowerCase();
+      const queryLower = q.toLowerCase();
+      let score = 0;
 
-    // Step 2: Get detailed info (statistics, contentDetails)
+      // Exact matches
+      if (channel === queryLower) score += 100;
+      if (title === queryLower) score += 90;
+
+      // Starts with
+      if (title.startsWith(queryLower)) score += 70;
+      if (channel.startsWith(queryLower)) score += 60;
+
+      // Contains
+      if (title.includes(queryLower)) score += 40;
+      if (channel.includes(queryLower)) score += 30;
+
+      return score;
+    };
+
+    const sortedItems = [...searchData.items].sort((a: any, b: any) => {
+      const scoreA = getScore(a, query);
+      const scoreB = getScore(b, query);
+      
+      if (scoreA !== scoreB) {
+        return scoreB - scoreA; // Higher score first
+      }
+      
+      return 0; // Maintain original YouTube relevance if scores are equal
+    });
+
+    const videoIds = sortedItems.map((item: any) => item.id.videoId).join(',');
+    const channelIds = [...new Set(sortedItems.map((item: any) => item.snippet.channelId))].join(',');
+
+    // Step 2: Get detailed info
     const detailsResponse = await fetch(
       `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id=${videoIds}&key=${apiKey}`
     );
@@ -67,18 +100,27 @@ export const getYouTubeVideos = async (query: string = 'trending', apiKey: strin
       channelAvatars[channel.id] = channel.snippet.thumbnails.default.url;
     });
 
-    const videos = detailsData.items.map((item: any) => ({
-      id: item.id,
-      title: item.snippet.title,
-      thumbnail: item.snippet.thumbnails.high?.url || item.snippet.thumbnails.default?.url,
-      videoUrl: `https://www.youtube.com/embed/${item.id}`,
-      channelName: item.snippet.channelTitle,
-      channelAvatar: channelAvatars[item.snippet.channelId] || `https://picsum.photos/seed/${item.snippet.channelId}/40/40`,
-      views: formatViews(item.statistics.viewCount),
-      postedAt: new Date(item.snippet.publishedAt).toLocaleDateString(),
-      duration: formatDuration(item.contentDetails.duration),
-      description: item.snippet.description
-    }));
+    // Map back to our Video interface, maintaining the sorted order from Step 1
+    const videosMap = new Map();
+    detailsData.items?.forEach((item: any) => {
+      videosMap.set(item.id, {
+        id: item.id,
+        title: item.snippet.title,
+        thumbnail: item.snippet.thumbnails.high?.url || item.snippet.thumbnails.default?.url,
+        videoUrl: `https://www.youtube.com/embed/${item.id}`,
+        channelName: item.snippet.channelTitle,
+        channelAvatar: channelAvatars[item.snippet.channelId] || `https://picsum.photos/seed/${item.snippet.channelId}/40/40`,
+        views: formatViews(item.statistics.viewCount),
+        postedAt: new Date(item.snippet.publishedAt).toLocaleDateString(),
+        duration: formatDuration(item.contentDetails.duration),
+        description: item.snippet.description
+      });
+    });
+
+    // Reconstruct the array based on sorted search results
+    const videos = sortedItems
+      .map((item: any) => videosMap.get(item.id.videoId))
+      .filter(v => v !== undefined);
 
     return { videos };
   } catch (error) {

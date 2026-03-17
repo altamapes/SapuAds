@@ -73,6 +73,13 @@ export default function App() {
     fetchVideos(searchQuery);
   };
 
+  const handleChannelClick = (e: React.MouseEvent, channelName: string) => {
+    e.stopPropagation();
+    setSearchQuery(channelName);
+    setSelectedVideo(null);
+    fetchVideos(channelName);
+  };
+
   return (
     <div className="flex flex-col h-screen bg-[#0f0f0f] text-white overflow-hidden">
       {/* Header */}
@@ -251,8 +258,11 @@ export default function App() {
                             className="w-10 h-10 rounded-full"
                             referrerPolicy="no-referrer"
                           />
-                          <div>
-                            <p className="font-bold">{selectedVideo.channelName}</p>
+                          <div 
+                            className="cursor-pointer group/channel"
+                            onClick={(e) => handleChannelClick(e, selectedVideo.channelName)}
+                          >
+                            <p className="font-bold group-hover/channel:text-blue-400 transition-colors">{selectedVideo.channelName}</p>
                             <p className="text-xs text-white/60">YouTube Creator</p>
                           </div>
                           <button className="ml-4 bg-white text-black px-4 py-2 rounded-full font-bold text-sm hover:bg-white/90 transition-colors">
@@ -315,7 +325,12 @@ export default function App() {
                         </div>
                         <div className="flex flex-col gap-1">
                           <h3 className="text-sm font-bold line-clamp-2 leading-tight group-hover:text-blue-400 transition-colors" dangerouslySetInnerHTML={{ __html: video.title }} />
-                          <p className="text-xs text-white/60">{video.channelName}</p>
+                          <p 
+                            className="text-xs text-white/60 hover:text-white transition-colors cursor-pointer"
+                            onClick={(e) => handleChannelClick(e, video.channelName)}
+                          >
+                            {video.channelName}
+                          </p>
                           <p className="text-xs text-white/60">{video.views} • {video.postedAt}</p>
                         </div>
                       </div>
@@ -335,6 +350,7 @@ export default function App() {
                       key={video.id} 
                       video={video} 
                       onClick={() => setSelectedVideo(video)} 
+                      onChannelClick={handleChannelClick}
                     />
                   ))}
                 </motion.div>
@@ -389,7 +405,11 @@ function SidebarItem({ icon, label, active = false, onClick, isOpen }: { icon: R
   );
 }
 
-const VideoCard: React.FC<{ video: Video; onClick: () => void }> = ({ video, onClick }) => {
+const VideoCard: React.FC<{ 
+  video: Video; 
+  onClick: () => void;
+  onChannelClick: (e: React.MouseEvent, name: string) => void;
+}> = ({ video, onClick, onChannelClick }) => {
   return (
     <div 
       className="flex flex-col gap-3 cursor-pointer group"
@@ -416,12 +436,18 @@ const VideoCard: React.FC<{ video: Video; onClick: () => void }> = ({ video, onC
         <img 
           src={video.channelAvatar} 
           alt={video.channelName} 
-          className="w-9 h-9 rounded-full flex-shrink-0"
+          className="w-9 h-9 rounded-full flex-shrink-0 hover:opacity-80 transition-opacity"
           referrerPolicy="no-referrer"
+          onClick={(e) => onChannelClick(e, video.channelName)}
         />
         <div className="flex flex-col gap-1">
           <h3 className="font-bold line-clamp-2 leading-tight text-[15px] group-hover:text-blue-400 transition-colors" dangerouslySetInnerHTML={{ __html: video.title }} />
-          <p className="text-sm text-white/60 mt-1">{video.channelName}</p>
+          <p 
+            className="text-sm text-white/60 mt-1 hover:text-white transition-colors cursor-pointer"
+            onClick={(e) => onChannelClick(e, video.channelName)}
+          >
+            {video.channelName}
+          </p>
           <p className="text-sm text-white/60">
             {video.views} • {video.postedAt}
           </p>
