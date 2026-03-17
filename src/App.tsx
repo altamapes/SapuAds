@@ -34,7 +34,8 @@ import {
   LayoutDashboard,
   Users,
   BarChart3,
-  Clock
+  Clock,
+  Folder
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { getYouTubeVideos, getChannelVideos, getVideoDetails, Video, Channel } from './types';
@@ -62,7 +63,8 @@ import {
   deleteDoc, 
   serverTimestamp,
   getDocs,
-  where
+  where,
+  updateDoc
 } from 'firebase/firestore';
 
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || '';
@@ -128,6 +130,10 @@ function PlVideoApp() {
   const [userProfile, setUserProfile] = useState<any>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [userPlaylist, setUserPlaylist] = useState<Video[]>([]);
+  const [activeFolder, setActiveFolder] = useState<string>('Semua');
+  const FOLDERS = ['Semua', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu'];
+  
+  const activeUserPlaylist = userPlaylist.filter(video => activeFolder === 'Semua' || (video.folder || 'Semua') === activeFolder);
   
   const [isLooping, setIsLooping] = useState(true);
   const [useNoCookie, setUseNoCookie] = useState(true);
@@ -247,6 +253,7 @@ function PlVideoApp() {
   const selectedVideoRef = useRef<Video | null>(null);
   const playlistRef = useRef<Video[]>([]);
   const userPlaylistRef = useRef<Video[]>([]);
+  const activeFolderRef = useRef<string>('Semua');
   const isLoopingRef = useRef<boolean>(true);
 
   useEffect(() => {
@@ -268,6 +275,10 @@ function PlVideoApp() {
   useEffect(() => {
     userPlaylistRef.current = userPlaylist;
   }, [userPlaylist]);
+
+  useEffect(() => {
+    activeFolderRef.current = activeFolder;
+  }, [activeFolder]);
 
   useEffect(() => {
     isLoopingRef.current = isLooping;
@@ -371,8 +382,10 @@ function PlVideoApp() {
     
     // Prioritize user playlist if it has videos and the current video is in it
     const isInUserPlaylist = userPlaylistRef.current.some(v => v.id === selectedVideoRef.current?.id);
+    const activeUserPlaylist = userPlaylistRef.current.filter(v => activeFolderRef.current === 'Semua' || (v.folder || 'Semua') === activeFolderRef.current);
+    
     const currentList = isInUserPlaylist 
-      ? userPlaylistRef.current 
+      ? activeUserPlaylist 
       : (playlistRef.current.length > 0 ? playlistRef.current : videosRef.current);
     
     const currentIndex = currentList.findIndex(v => v.id === selectedVideoRef.current?.id);
@@ -434,7 +447,8 @@ function PlVideoApp() {
           duration: video.duration,
           views: video.views,
           postedAt: video.postedAt,
-          addedAt: serverTimestamp()
+          addedAt: serverTimestamp(),
+          folder: 'Semua'
         });
       } catch (error) {
         handleFirestoreError(error, OperationType.CREATE, `users/${user.uid}/playlist/${video.id}`);
@@ -449,6 +463,16 @@ function PlVideoApp() {
       await deleteDoc(playlistItemRef);
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, `users/${user.uid}/playlist/${videoId}`);
+    }
+  };
+
+  const moveToFolder = async (videoId: string, folder: string) => {
+    if (!user) return;
+    const playlistItemRef = doc(db, 'users', user.uid, 'playlist', videoId);
+    try {
+      await updateDoc(playlistItemRef, { folder });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `users/${user.uid}/playlist/${videoId}`);
     }
   };
 
@@ -867,19 +891,19 @@ function PlVideoApp() {
                 <div className="w-full lg:w-[400px] flex flex-col gap-3">
                   <div className="flex items-center justify-between mb-1">
                     <h3 className="font-bold">
-                      {userPlaylist.length > 0 ? 'My Playlist' : 'Up Next'}
+                      {activeUserPlaylist.length > 0 ? `My Playlist (${activeFolder})` : 'Up Next'}
                     </h3>
-                    {userPlaylist.length > 0 && (
+                    {activeUserPlaylist.length > 0 && (
                       <span className="text-[10px] bg-blue-500/20 text-blue-400 px-2 py-0.5 rounded-full font-bold">
-                        {userPlaylist.length} VIDEOS
+                        {activeUserPlaylist.length} VIDEOS
                       </span>
                     )}
                   </div>
 
                   {/* Show User Playlist first if it has items */}
-                  {userPlaylist.length > 0 ? (
+                  {activeUserPlaylist.length > 0 ? (
                     <div className="flex flex-col gap-2 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
-                      {userPlaylist.map((video) => (
+                      {activeUserPlaylist.map((video) => (
                         <div 
                           key={`playlist-sidebar-${video.id}`} 
                           className={`flex gap-2 cursor-pointer group p-2 rounded-lg transition-all border ${selectedVideo.id === video.id ? 'bg-blue-500/10 border-blue-500/30' : 'hover:bg-white/5 border-transparent'}`}
@@ -1174,7 +1198,7 @@ function PlVideoApp() {
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 sm:mb-8">
             <div>
               <h1 className="text-2xl sm:text-3xl font-bold mb-1 sm:mb-2">My Playlist</h1>
-              <p className="text-xs sm:text-sm text-white/60">{userPlaylist.length} videos • Saved locally</p>
+              <p className="text-xs sm:text-sm text-white/60">{activeUserPlaylist.length} videos • Saved locally</p>
             </div>
             <div className="flex gap-2 sm:gap-4 overflow-x-auto pb-2 sm:pb-0 no-scrollbar">
               <button 
@@ -1194,27 +1218,68 @@ function PlVideoApp() {
             </div>
           </div>
 
+          <div className="flex gap-2 overflow-x-auto pb-4 mb-4 no-scrollbar">
+            {FOLDERS.map(folder => (
+              <button
+                key={folder}
+                onClick={() => setActiveFolder(folder)}
+                className={`px-4 py-1.5 rounded-full text-sm font-medium whitespace-nowrap transition-colors ${
+                  activeFolder === folder 
+                    ? 'bg-white text-black' 
+                    : 'bg-white/10 text-white hover:bg-white/20'
+                }`}
+              >
+                {folder}
+              </button>
+            ))}
+          </div>
+
               {userPlaylist.length > 0 ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-4 gap-y-8">
-                  {userPlaylist.map(video => (
-                    <div key={video.id} className="relative group">
-                      <VideoCard 
-                        video={video} 
-                        onClick={() => handleVideoSelect(video)} 
-                        onChannelClick={handleChannelClick}
-                        onAddToPlaylist={() => {}}
-                        isInPlaylist={true}
-                      />
-                      <button 
-                        onClick={(e) => { e.stopPropagation(); removeFromPlaylist(video.id); }}
-                        className="absolute top-2 right-2 p-2 bg-red-600 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity shadow-lg z-10"
-                        title="Remove from Playlist"
-                      >
-                        <Trash2 size={16} />
-                      </button>
+                activeUserPlaylist.length > 0 ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-4 gap-y-8">
+                    {activeUserPlaylist.map(video => (
+                      <div key={video.id} className="relative group">
+                        <VideoCard 
+                          video={video} 
+                          onClick={() => handleVideoSelect(video)} 
+                          onChannelClick={handleChannelClick}
+                          onAddToPlaylist={() => {}}
+                          isInPlaylist={true}
+                        />
+                        <div className="absolute top-2 left-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <select 
+                            value={video.folder || 'Semua'}
+                            onChange={(e) => { e.stopPropagation(); moveToFolder(video.id, e.target.value); }}
+                            onClick={(e) => e.stopPropagation()}
+                            className="bg-black/80 text-white text-xs px-2 py-1.5 rounded-lg border border-white/20 outline-none cursor-pointer appearance-none pr-6 font-medium"
+                            style={{ backgroundImage: 'url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%23FFFFFF%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.5-12.8z%22%2F%3E%3C%2Fsvg%3E")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right .5rem top 50%', backgroundSize: '.65rem auto' }}
+                          >
+                            {FOLDERS.map(f => (
+                              <option key={f} value={f}>{f}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <button 
+                          onClick={(e) => { e.stopPropagation(); removeFromPlaylist(video.id); }}
+                          className="absolute top-2 right-2 p-2 bg-red-600 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity shadow-lg z-10"
+                          title="Remove from Playlist"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="h-[40vh] flex flex-col items-center justify-center text-center gap-4">
+                    <div className="bg-white/5 p-6 rounded-full">
+                      <Folder size={48} className="text-white/20" />
                     </div>
-                  ))}
-                </div>
+                    <div>
+                      <h2 className="text-xl font-bold mb-2">Folder {activeFolder} kosong</h2>
+                      <p className="text-white/60 text-sm">Pindahkan video ke folder ini untuk mengaturnya.</p>
+                    </div>
+                  </div>
+                )
               ) : (
                 <div className="h-[60vh] flex flex-col items-center justify-center text-center gap-4">
                   <div className="bg-white/5 p-8 rounded-full">

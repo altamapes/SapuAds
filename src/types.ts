@@ -23,6 +23,7 @@ export interface Video {
   postedAt: string;
   duration: string;
   description: string;
+  folder?: string;
 }
 
 const formatDuration = (duration: string): string => {
