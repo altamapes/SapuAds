@@ -196,10 +196,14 @@ function PlVideoApp() {
     const q = query(homeVideosRef, orderBy('addedAt', 'desc'));
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const items = snapshot.docs.map(doc => ({
-        ...doc.data(),
-        id: doc.id
-      } as unknown as Video));
+      const items = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          ...data,
+          id: data.id || doc.id,
+          docId: doc.id
+        } as unknown as Video;
+      });
       setHomeVideos(items);
       
       // Update current view if we are on the home page and not searching
@@ -223,10 +227,13 @@ function PlVideoApp() {
     const q = query(playlistRef, orderBy('addedAt', 'desc'));
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const items = snapshot.docs.map(doc => ({
-        ...doc.data(),
-        id: doc.id
-      } as unknown as Video));
+      const items = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          ...data,
+          id: data.videoId || doc.id
+        } as unknown as Video;
+      });
       setUserPlaylist(items);
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, `users/${user.uid}/playlist`);
@@ -505,6 +512,18 @@ function PlVideoApp() {
     }
   };
 
+  const clearPlaylist = async () => {
+    if (!user) return;
+    try {
+      const playlistRef = collection(db, 'users', user.uid, 'playlist');
+      const snapshot = await getDocs(playlistRef);
+      const deletePromises = snapshot.docs.map(doc => deleteDoc(doc.ref));
+      await Promise.all(deletePromises);
+    } catch (error) {
+      console.error("Error clearing playlist:", error);
+    }
+  };
+
   const moveToFolder = async (videoId: string, folder: string) => {
     if (!user) return;
     const playlistItemRef = doc(db, 'users', user.uid, 'playlist', videoId);
@@ -563,7 +582,7 @@ function PlVideoApp() {
         };
       }
 
-      await addDoc(collection(db, 'home_videos'), {
+      await setDoc(doc(db, 'home_videos', videoDetails.id), {
         ...videoDetails,
         addedAt: serverTimestamp()
       });
@@ -576,11 +595,11 @@ function PlVideoApp() {
     }
   };
 
-  const handleDeleteHomeVideo = async (videoId: string) => {
+  const handleDeleteHomeVideo = async (docId: string) => {
     if (userProfile?.role !== 'admin') return;
 
     try {
-      await deleteDoc(doc(db, 'home_videos', videoId));
+      await deleteDoc(doc(db, 'home_videos', docId));
     } catch (error) {
       console.error("Error deleting home video:", error);
     }
@@ -1330,7 +1349,7 @@ function PlVideoApp() {
                 {isLooping ? 'Looping On' : 'Looping Off'}
               </button>
               <button 
-                onClick={() => setUserPlaylist([])}
+                onClick={clearPlaylist}
                 className="flex items-center gap-2 px-4 sm:px-6 py-2 sm:py-2.5 bg-red-500/10 text-red-400 border border-red-500/20 rounded-full font-bold text-xs sm:text-base hover:bg-red-500/20 transition-all whitespace-nowrap"
               >
                 <Trash2 className="w-[18px] h-[18px] sm:w-[20px] sm:h-[20px]" />
@@ -1661,7 +1680,7 @@ function PlVideoApp() {
                               onChannelClick={handleChannelClick}
                               onAddToPlaylist={() => addToPlaylist(video)}
                               isInPlaylist={userPlaylist.some(v => v.id === video.id)}
-                              onDelete={(activeTab === 'home' || activeTab === 'trending') && !searchQuery && userProfile?.role === 'admin' ? () => handleDeleteHomeVideo(video.id) : undefined}
+                              onDelete={(activeTab === 'home' || activeTab === 'trending') && !searchQuery && userProfile?.role === 'admin' ? () => handleDeleteHomeVideo(video.docId || video.id) : undefined}
                             />
                           ))}
                         </div>

@@ -13,6 +13,7 @@ export interface Channel {
 
 export interface Video {
   id: string;
+  docId?: string;
   title: string;
   thumbnail: string;
   videoUrl: string;
