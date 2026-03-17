@@ -1,5 +1,5 @@
 {
-  "name": "SapuAds",
-  "description": "A YouTube-like video streaming platform with built-in ad-blocking features for a clean viewing experience.",
+  "name": "Unity Group Video App",
+  "description": "A professional video platform for Unity Group with PWA support.",
   "requestFramePermissions": []
 }

@@ -103,12 +103,12 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boole
 export default function App() {
   return (
     <ErrorBoundary>
-      <SapuAdsApp />
+      <UnityVideoApp />
     </ErrorBoundary>
   );
 }
 
-function SapuAdsApp() {
+function UnityVideoApp() {
   const [videos, setVideos] = useState<Video[]>([]);
   const [recommendations, setRecommendations] = useState<Video[]>([]);
   const [currentChannel, setCurrentChannel] = useState<Channel | null>(null);
@@ -618,7 +618,7 @@ function SapuAdsApp() {
             <div className="bg-red-600 p-1 rounded-lg">
               <PlaySquare className="w-[18px] h-[18px] sm:w-[20px] sm:h-[20px]" fill="white" />
             </div>
-            <span className="text-lg sm:text-xl font-bold tracking-tighter">SapuAds</span>
+            <span className="text-lg sm:text-xl font-bold tracking-tighter">UnityVideo</span>
           </div>
         </div>
 
@@ -757,7 +757,7 @@ function SapuAdsApp() {
             <div className="mt-auto p-4 bg-white/5 rounded-xl border border-white/10">
               <h3 className="text-sm font-bold mb-2 flex items-center gap-2">
                 <ShieldCheck size={16} className="text-emerald-400" />
-                SapuAds Premium
+                UnityVideo Premium
               </h3>
               <p className="text-xs text-white/60">No ads, no interruptions. Just pure content.</p>
             </div>
@@ -1556,7 +1556,7 @@ function SapuAdsApp() {
               <ShieldCheck size={24} />
             </div>
             <div>
-              <h4 className="font-bold">SapuAds Active</h4>
+              <h4 className="font-bold">UnityVideo Active</h4>
               <p className="text-sm opacity-90">All intrusive ads have been blocked.</p>
             </div>
             <button 
