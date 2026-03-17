@@ -1,5 +1,5 @@
 {
-  "name": "Unity Group Video App",
-  "description": "A professional video platform for Unity Group with PWA support.",
+  "name": "PlVideo",
+  "description": "A professional video platform with PWA support.",
   "requestFramePermissions": []
 }

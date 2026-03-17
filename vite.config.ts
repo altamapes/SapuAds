@@ -14,9 +14,9 @@ export default defineConfig(({ mode }) => {
         registerType: 'autoUpdate',
         includeAssets: ['favicon.svg', 'apple-touch-icon.png', 'masked-icon.svg'],
         manifest: {
-          name: 'Unity Group Video App',
-          short_name: 'UnityVideo',
-          description: 'A professional video platform for Unity Group',
+          name: 'PlVideo',
+          short_name: 'PlVideo',
+          description: 'A professional video platform',
           theme_color: '#0f0f0f',
           background_color: '#0f0f0f',
           display: 'standalone',
