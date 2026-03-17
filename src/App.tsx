@@ -141,6 +141,8 @@ function SapuAdsApp() {
     recentUsers: [] as any[]
   });
 
+  const [authError, setAuthError] = useState<string | null>(null);
+
   // Auth Listener
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
@@ -390,10 +392,18 @@ function SapuAdsApp() {
   };
 
   const login = async () => {
+    setAuthError(null);
     try {
       await signInWithPopup(auth, googleProvider);
-    } catch (error) {
-      console.error("Login failed:", error);
+    } catch (error: any) {
+      if (error.code === 'auth/popup-closed-by-user') {
+        setAuthError("Login cancelled. Please try again.");
+        setTimeout(() => setAuthError(null), 3000);
+      } else {
+        console.error("Login failed:", error);
+        setAuthError("Login failed. Please check your connection.");
+        setTimeout(() => setAuthError(null), 5000);
+      }
     }
   };
 
@@ -577,6 +587,19 @@ function SapuAdsApp() {
     <div className="flex flex-col h-screen bg-[#0f0f0f] text-white overflow-hidden">
       {/* Header */}
       <header className="flex items-center justify-between px-2 sm:px-4 py-2 sticky top-0 bg-[#0f0f0f] z-50 border-b border-white/5">
+        <AnimatePresence>
+          {authError && (
+            <motion.div 
+              initial={{ opacity: 0, y: -50 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -50 }}
+              className="absolute top-16 left-1/2 -translate-x-1/2 bg-red-500 text-white px-6 py-2 rounded-full shadow-2xl z-[100] flex items-center gap-2 text-sm font-bold"
+            >
+              <ShieldAlert size={16} />
+              {authError}
+            </motion.div>
+          )}
+        </AnimatePresence>
         <div className="flex items-center gap-2 sm:gap-4">
           <button 
             onClick={() => setIsSidebarOpen(!isSidebarOpen)}
