@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Component, ReactNode } from 'react';
 import { 
   Menu, 
   Search, 
@@ -27,14 +27,88 @@ import {
   Repeat,
   List,
   Trash2,
-  Plus
+  Plus,
+  LogOut,
+  LogIn,
+  Settings,
+  LayoutDashboard,
+  Users,
+  BarChart3,
+  Clock
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { getYouTubeVideos, getChannelVideos, getVideoDetails, Video, Channel } from './types';
+import { 
+  auth, 
+  db, 
+  googleProvider, 
+  handleFirestoreError, 
+  OperationType, 
+  FirebaseUser 
+} from './firebase';
+import { 
+  signInWithPopup, 
+  signOut, 
+  onAuthStateChanged 
+} from 'firebase/auth';
+import { 
+  doc, 
+  setDoc, 
+  getDoc, 
+  collection, 
+  onSnapshot, 
+  query, 
+  orderBy, 
+  deleteDoc, 
+  serverTimestamp,
+  getDocs,
+  where
+} from 'firebase/firestore';
 
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || '';
 
+// Error Boundary Component
+class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean, errorInfo: string | null }> {
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false, errorInfo: null };
+  }
+
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, errorInfo: error.message };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="h-screen w-screen bg-[#0f0f0f] text-white flex flex-col items-center justify-center p-6 text-center">
+          <ShieldAlert size={64} className="text-red-500 mb-6" />
+          <h1 className="text-2xl font-bold mb-4">Something went wrong</h1>
+          <div className="bg-white/5 p-4 rounded-xl border border-white/10 max-w-lg mb-6 overflow-auto max-h-48">
+            <code className="text-xs text-red-400">{this.state.errorInfo}</code>
+          </div>
+          <button 
+            onClick={() => window.location.reload()}
+            className="bg-white text-black px-8 py-3 rounded-full font-bold hover:bg-white/90 transition-all"
+          >
+            Reload Application
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App() {
+  return (
+    <ErrorBoundary>
+      <SapuAdsApp />
+    </ErrorBoundary>
+  );
+}
+
+function SapuAdsApp() {
   const [videos, setVideos] = useState<Video[]>([]);
   const [recommendations, setRecommendations] = useState<Video[]>([]);
   const [currentChannel, setCurrentChannel] = useState<Channel | null>(null);
@@ -48,41 +122,105 @@ export default function App() {
   const [player, setPlayer] = useState<any>(null);
   const [isApiReady, setIsApiReady] = useState(false);
   const [playlist, setPlaylist] = useState<Video[]>([]);
-  const [userPlaylist, setUserPlaylist] = useState<Video[]>(() => {
-    try {
-      const saved = localStorage.getItem('sapuads_user_playlist');
-      return saved ? JSON.parse(saved) : [];
-    } catch (e) {
-      return [];
-    }
-  });
+  
+  // Firebase State
+  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [userProfile, setUserProfile] = useState<any>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [userPlaylist, setUserPlaylist] = useState<Video[]>([]);
+  
   const [isLooping, setIsLooping] = useState(true);
   const [useNoCookie, setUseNoCookie] = useState(true);
-  const [activeTab, setActiveTab] = useState<'home' | 'trending' | 'playlist'>('home');
-  const [channelCache, setChannelCache] = useState<Record<string, Video[]>>(() => {
-    try {
-      const saved = localStorage.getItem('sapuads_channel_cache');
-      return saved ? JSON.parse(saved) : {};
-    } catch (e) {
-      return {};
-    }
+  const [activeTab, setActiveTab] = useState<'home' | 'trending' | 'playlist' | 'dashboard' | 'admin'>('home');
+  const [channelCache, setChannelCache] = useState<Record<string, Video[]>>({});
+
+  // Admin Stats
+  const [adminStats, setAdminStats] = useState({
+    totalUsers: 0,
+    totalPlaylistItems: 0,
+    recentUsers: [] as any[]
   });
 
+  // Auth Listener
   useEffect(() => {
-    try {
-      localStorage.setItem('sapuads_channel_cache', JSON.stringify(channelCache));
-    } catch (e) {
-      console.warn("Failed to save cache to localStorage", e);
-    }
-  }, [channelCache]);
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      setUser(firebaseUser);
+      if (firebaseUser) {
+        // Fetch or create user profile
+        const userDocRef = doc(db, 'users', firebaseUser.uid);
+        try {
+          const userDoc = await getDoc(userDocRef);
+          if (userDoc.exists()) {
+            setUserProfile(userDoc.data());
+          } else {
+            const newProfile = {
+              uid: firebaseUser.uid,
+              email: firebaseUser.email,
+              displayName: firebaseUser.displayName,
+              photoURL: firebaseUser.photoURL,
+              role: firebaseUser.email === 'altamapes@gmail.com' ? 'admin' : 'user',
+              createdAt: serverTimestamp(),
+              lastLogin: serverTimestamp()
+            };
+            await setDoc(userDocRef, newProfile);
+            setUserProfile(newProfile);
+          }
+        } catch (error) {
+          console.error("Error fetching user profile:", error);
+        }
+      } else {
+        setUserProfile(null);
+        setUserPlaylist([]); // Clear playlist on logout
+      }
+      setIsAuthLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
 
+  // Playlist Sync Listener
   useEffect(() => {
-    try {
-      localStorage.setItem('sapuads_user_playlist', JSON.stringify(userPlaylist));
-    } catch (e) {
-      console.warn("Failed to save playlist to localStorage", e);
-    }
-  }, [userPlaylist]);
+    if (!user) return;
+
+    const playlistRef = collection(db, 'users', user.uid, 'playlist');
+    const q = query(playlistRef, orderBy('addedAt', 'desc'));
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const items = snapshot.docs.map(doc => ({
+        ...doc.data(),
+        id: doc.id
+      } as unknown as Video));
+      setUserPlaylist(items);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, `users/${user.uid}/playlist`);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // Admin Stats Listener
+  useEffect(() => {
+    if (userProfile?.role !== 'admin' || activeTab !== 'admin') return;
+
+    const fetchAdminStats = async () => {
+      try {
+        const usersSnap = await getDocs(collection(db, 'users'));
+        const recentUsers = usersSnap.docs
+          .map(d => d.data())
+          .sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0))
+          .slice(0, 5);
+
+        setAdminStats({
+          totalUsers: usersSnap.size,
+          totalPlaylistItems: 0, // Would need a collectionGroup query or similar
+          recentUsers
+        });
+      } catch (error) {
+        console.error("Error fetching admin stats:", error);
+      }
+    };
+
+    fetchAdminStats();
+  }, [userProfile, activeTab]);
 
   useEffect(() => {
     // Enrich placeholder videos in user playlist
@@ -251,24 +389,57 @@ export default function App() {
     }
   };
 
-  const addToPlaylist = (video: Video) => {
+  const login = async () => {
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (error) {
+      console.error("Login failed:", error);
+    }
+  };
+
+  const logout = async () => {
+    try {
+      await signOut(auth);
+      setActiveTab('home');
+    } catch (error) {
+      console.error("Logout failed:", error);
+    }
+  };
+
+  const addToPlaylist = async (video: Video) => {
+    if (!user) {
+      login();
+      return;
+    }
+
     if (!userPlaylist.some(v => v.id === video.id)) {
-      setUserPlaylist(prev => [...prev, video]);
-      
-      // If it's a placeholder, try to enrich it immediately
-      if (video.title === "Video dari Link" || video.title === "Loading video details...") {
-        getVideoDetails(video.id, YOUTUBE_API_KEY).then(enriched => {
-          if (enriched) {
-            setUserPlaylist(prev => prev.map(v => v.id === video.id ? enriched : v));
-            setSelectedVideo(prev => prev?.id === video.id ? enriched : prev);
-          }
-        }).catch(() => {});
+      const playlistItemRef = doc(db, 'users', user.uid, 'playlist', video.id);
+      try {
+        await setDoc(playlistItemRef, {
+          videoId: video.id,
+          title: video.title,
+          thumbnail: video.thumbnail,
+          channelName: video.channelName,
+          channelAvatar: video.channelAvatar,
+          duration: video.duration,
+          views: video.views,
+          postedAt: video.postedAt,
+          addedAt: serverTimestamp()
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.CREATE, `users/${user.uid}/playlist/${video.id}`);
       }
     }
   };
 
-  const removeFromPlaylist = (videoId: string) => {
-    setUserPlaylist(prev => prev.filter(v => v.id !== videoId));
+  const removeFromPlaylist = async (videoId: string) => {
+    if (!user) return;
+    const playlistItemRef = doc(db, 'users', user.uid, 'playlist', videoId);
+    try {
+      await deleteDoc(playlistItemRef);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `users/${user.uid}/playlist/${videoId}`);
+    }
   };
 
   const toggleLoop = () => {
@@ -422,7 +593,7 @@ export default function App() {
             }}
           >
             <div className="bg-red-600 p-1 rounded-lg">
-              <PlaySquare size={18} sm:size={20} fill="white" />
+              <PlaySquare className="w-[18px] h-[18px] sm:w-[20px] sm:h-[20px]" fill="white" />
             </div>
             <span className="text-lg sm:text-xl font-bold tracking-tighter">SapuAds</span>
           </div>
@@ -438,7 +609,7 @@ export default function App() {
               onChange={(e) => setSearchQuery(e.target.value)}
             />
             <button type="submit" className="bg-white/10 px-3 sm:px-5 py-1.5 sm:py-2 border-l border-white/10 hover:bg-white/20 transition-colors">
-              <Search size={18} sm:size={20} />
+              <Search className="w-[18px] h-[18px] sm:w-[20px] sm:h-[20px]" />
             </button>
           </div>
         </form>
@@ -456,11 +627,39 @@ export default function App() {
               {isAdBlockActive ? 'Ad-Block' : 'Ads On'}
             </span>
           </button>
-          <button className="p-2 hover:bg-white/10 rounded-full transition-colors">
-            <div className="w-7 h-7 sm:w-8 sm:h-8 bg-indigo-600 rounded-full flex items-center justify-center">
-              <User size={16} sm:size={20} />
+          
+          {user ? (
+            <div className="flex items-center gap-2">
+              <button 
+                onClick={() => setActiveTab('dashboard')}
+                className="p-2 hover:bg-white/10 rounded-full transition-colors"
+                title="User Dashboard"
+              >
+                <img 
+                  src={user.photoURL || ''} 
+                  alt={user.displayName || 'User'} 
+                  className="w-7 h-7 sm:w-8 sm:h-8 rounded-full border border-white/20"
+                />
+              </button>
+              {userProfile?.role === 'admin' && (
+                <button 
+                  onClick={() => setActiveTab('admin')}
+                  className="p-2 hover:bg-white/10 rounded-full transition-colors text-orange-400"
+                  title="Admin Panel"
+                >
+                  <ShieldCheck size={20} />
+                </button>
+              )}
             </div>
-          </button>
+          ) : (
+            <button 
+              onClick={login}
+              className="flex items-center gap-2 bg-white text-black px-3 sm:px-4 py-1.5 sm:py-2 rounded-full font-bold text-xs sm:text-sm hover:bg-white/90 transition-all"
+            >
+              <LogIn size={18} />
+              <span className="hidden sm:inline">Sign In</span>
+            </button>
+          )}
         </div>
       </header>
 
@@ -502,6 +701,34 @@ export default function App() {
             }}
             isOpen={isSidebarOpen} 
           />
+          {user && (
+            <>
+              <SidebarItem 
+                icon={<LayoutDashboard size={22} />} 
+                label="Dashboard" 
+                active={activeTab === 'dashboard'}
+                onClick={() => {
+                  setActiveTab('dashboard');
+                  setSelectedVideo(null);
+                  setCurrentChannel(null);
+                }}
+                isOpen={isSidebarOpen} 
+              />
+              {userProfile?.role === 'admin' && (
+                <SidebarItem 
+                  icon={<ShieldCheck size={22} className="text-orange-400" />} 
+                  label="Admin Panel" 
+                  active={activeTab === 'admin'}
+                  onClick={() => {
+                    setActiveTab('admin');
+                    setSelectedVideo(null);
+                    setCurrentChannel(null);
+                  }}
+                  isOpen={isSidebarOpen} 
+                />
+              )}
+            </>
+          )}
           <hr className="border-white/10 my-2" />
           {isSidebarOpen && (
             <div className="mt-auto p-4 bg-white/5 rounded-xl border border-white/10">
@@ -724,6 +951,197 @@ export default function App() {
                 </div>
               </div>
             </div>
+          ) : activeTab === 'dashboard' ? (
+            <motion.div 
+              initial={{ opacity: 0, x: -20 }}
+              animate={{ opacity: 1, x: 0 }}
+              className="max-w-4xl mx-auto"
+            >
+              <div className="bg-white/5 rounded-3xl p-6 sm:p-10 border border-white/10 mb-8">
+                <div className="flex flex-col sm:flex-row items-center gap-6 mb-8">
+                  <img 
+                    src={user?.photoURL || ''} 
+                    alt={user?.displayName || ''} 
+                    className="w-24 h-24 rounded-full border-4 border-blue-500/30 shadow-2xl"
+                  />
+                  <div className="text-center sm:text-left">
+                    <h1 className="text-3xl font-bold mb-1">{user?.displayName}</h1>
+                    <p className="text-white/60 mb-4">{user?.email}</p>
+                    <div className="flex flex-wrap justify-center sm:justify-start gap-3">
+                      <span className="bg-blue-500/20 text-blue-400 px-4 py-1 rounded-full text-sm font-bold border border-blue-500/30 uppercase tracking-wider">
+                        {userProfile?.role || 'User'}
+                      </span>
+                      <span className="bg-white/5 text-white/60 px-4 py-1 rounded-full text-sm font-bold border border-white/10">
+                        {userPlaylist.length} Saved Videos
+                      </span>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={logout}
+                    className="sm:ml-auto flex items-center gap-2 bg-red-500/10 text-red-400 px-6 py-2.5 rounded-full font-bold hover:bg-red-500/20 transition-all border border-red-500/20"
+                  >
+                    <LogOut size={18} />
+                    Sign Out
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div className="bg-white/5 p-6 rounded-2xl border border-white/10 text-center">
+                    <Clock size={24} className="mx-auto mb-3 text-blue-400" />
+                    <p className="text-2xl font-bold">{userPlaylist.length}</p>
+                    <p className="text-xs text-white/40 uppercase font-bold tracking-widest mt-1">Playlist Items</p>
+                  </div>
+                  <div className="bg-white/5 p-6 rounded-2xl border border-white/10 text-center">
+                    <ShieldCheck size={24} className="mx-auto mb-3 text-emerald-400" />
+                    <p className="text-2xl font-bold">Active</p>
+                    <p className="text-xs text-white/40 uppercase font-bold tracking-widest mt-1">Account Status</p>
+                  </div>
+                  <div className="bg-white/5 p-6 rounded-2xl border border-white/10 text-center">
+                    <Repeat size={24} className="mx-auto mb-3 text-orange-400" />
+                    <p className="text-2xl font-bold">{isLooping ? 'ON' : 'OFF'}</p>
+                    <p className="text-xs text-white/40 uppercase font-bold tracking-widest mt-1">Auto-Loop</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-xl font-bold">Account Settings</h2>
+                <Settings size={20} className="text-white/20" />
+              </div>
+
+              <div className="space-y-3">
+                <div className="flex items-center justify-between p-4 bg-white/5 rounded-xl border border-white/10">
+                  <div>
+                    <p className="font-bold">Cloud Sync</p>
+                    <p className="text-xs text-white/40">Your playlist is automatically synced across all devices.</p>
+                  </div>
+                  <div className="w-10 h-5 bg-emerald-500 rounded-full relative">
+                    <div className="absolute right-1 top-1 w-3 h-3 bg-white rounded-full" />
+                  </div>
+                </div>
+                <div className="flex items-center justify-between p-4 bg-white/5 rounded-xl border border-white/10">
+                  <div>
+                    <p className="font-bold">Ad-Blocker Notifications</p>
+                    <p className="text-xs text-white/40">Show notification when ad-blocker is active.</p>
+                  </div>
+                  <div className="w-10 h-5 bg-blue-500 rounded-full relative">
+                    <div className="absolute right-1 top-1 w-3 h-3 bg-white rounded-full" />
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          ) : activeTab === 'admin' ? (
+            <motion.div 
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="max-w-6xl mx-auto"
+            >
+              <div className="flex items-center gap-4 mb-8">
+                <div className="bg-orange-500 p-3 rounded-2xl shadow-lg shadow-orange-500/20">
+                  <ShieldCheck size={32} className="text-white" />
+                </div>
+                <div>
+                  <h1 className="text-3xl font-bold">Admin Dashboard</h1>
+                  <p className="text-white/60">System overview and user management</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+                <div className="bg-white/5 p-6 rounded-2xl border border-white/10">
+                  <Users size={24} className="text-blue-400 mb-4" />
+                  <p className="text-3xl font-bold">{adminStats.totalUsers}</p>
+                  <p className="text-sm text-white/40 font-medium">Total Registered Users</p>
+                </div>
+                <div className="bg-white/5 p-6 rounded-2xl border border-white/10">
+                  <BarChart3 size={24} className="text-emerald-400 mb-4" />
+                  <p className="text-3xl font-bold">Active</p>
+                  <p className="text-sm text-white/40 font-medium">System Status</p>
+                </div>
+                <div className="bg-white/5 p-6 rounded-2xl border border-white/10">
+                  <ShieldCheck size={24} className="text-orange-400 mb-4" />
+                  <p className="text-3xl font-bold">1</p>
+                  <p className="text-sm text-white/40 font-medium">Active Admins</p>
+                </div>
+                <div className="bg-white/5 p-6 rounded-2xl border border-white/10">
+                  <Clock size={24} className="text-purple-400 mb-4" />
+                  <p className="text-3xl font-bold">Live</p>
+                  <p className="text-sm text-white/40 font-medium">Real-time Syncing</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                <div className="lg:col-span-2">
+                  <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
+                    <Users size={20} className="text-white/40" />
+                    Recent Users
+                  </h2>
+                  <div className="bg-white/5 rounded-2xl border border-white/10 overflow-hidden">
+                    <table className="w-full text-left">
+                      <thead className="bg-white/5 text-xs uppercase tracking-widest text-white/40">
+                        <tr>
+                          <th className="px-6 py-4 font-bold">User</th>
+                          <th className="px-6 py-4 font-bold">Role</th>
+                          <th className="px-6 py-4 font-bold">Joined</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/5">
+                        {adminStats.recentUsers.map((u, i) => (
+                          <tr key={i} className="hover:bg-white/5 transition-colors">
+                            <td className="px-6 py-4">
+                              <div className="flex items-center gap-3">
+                                <img src={u.photoURL} alt="" className="w-8 h-8 rounded-full" />
+                                <div>
+                                  <p className="font-bold text-sm">{u.displayName}</p>
+                                  <p className="text-xs text-white/40">{u.email}</p>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-6 py-4">
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${u.role === 'admin' ? 'bg-orange-500/20 text-orange-400 border-orange-500/30' : 'bg-blue-500/20 text-blue-400 border-blue-500/30'}`}>
+                                {u.role.toUpperCase()}
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 text-xs text-white/40">
+                              {u.createdAt?.seconds ? new Date(u.createdAt.seconds * 1000).toLocaleDateString() : 'N/A'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div>
+                  <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
+                    <Settings size={20} className="text-white/40" />
+                    System Logs
+                  </h2>
+                  <div className="bg-white/5 rounded-2xl border border-white/10 p-4 space-y-4">
+                    <div className="flex gap-3">
+                      <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 mt-1.5" />
+                      <div>
+                        <p className="text-sm font-bold">Database Connected</p>
+                        <p className="text-xs text-white/40">Firestore instance initialized successfully.</p>
+                      </div>
+                    </div>
+                    <div className="flex gap-3">
+                      <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5" />
+                      <div>
+                        <p className="text-sm font-bold">Auth Service Ready</p>
+                        <p className="text-xs text-white/40">Firebase Auth provider configured.</p>
+                      </div>
+                    </div>
+                    <div className="flex gap-3">
+                      <div className="w-1.5 h-1.5 rounded-full bg-orange-500 mt-1.5" />
+                      <div>
+                        <p className="text-sm font-bold">Admin Access Granted</p>
+                        <p className="text-xs text-white/40">Verified admin credentials for current session.</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
           ) : activeTab === 'playlist' ? (
             <motion.div 
               initial={{ opacity: 0, y: 20 }}
@@ -740,14 +1158,14 @@ export default function App() {
                 onClick={toggleLoop}
                 className={`flex items-center gap-2 px-4 sm:px-6 py-2 sm:py-2.5 rounded-full font-bold text-xs sm:text-base transition-all whitespace-nowrap ${isLooping ? 'bg-blue-600 text-white' : 'bg-white/10 text-white/60'}`}
               >
-                <Repeat size={18} sm:size={20} />
+                <Repeat className="w-[18px] h-[18px] sm:w-[20px] sm:h-[20px]" />
                 {isLooping ? 'Looping On' : 'Looping Off'}
               </button>
               <button 
                 onClick={() => setUserPlaylist([])}
                 className="flex items-center gap-2 px-4 sm:px-6 py-2 sm:py-2.5 bg-red-500/10 text-red-400 border border-red-500/20 rounded-full font-bold text-xs sm:text-base hover:bg-red-500/20 transition-all whitespace-nowrap"
               >
-                <Trash2 size={18} sm:size={20} />
+                <Trash2 className="w-[18px] h-[18px] sm:w-[20px] sm:h-[20px]" />
                 Clear All
               </button>
             </div>
