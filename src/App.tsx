@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Menu, 
   Search, 
@@ -14,22 +14,29 @@ import {
   Home, 
   Compass, 
   PlaySquare, 
-  Clock, 
+  History, 
   ThumbsUp, 
+  ThumbsDown,
   Share2, 
+  MoreHorizontal,
   MoreVertical,
   ShieldCheck,
   ShieldAlert,
   X,
-  Loader2
+  Loader2,
+  Repeat,
+  List,
+  Trash2,
+  Plus
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { getYouTubeVideos, Video, Channel } from './types';
+import { getYouTubeVideos, getChannelVideos, getVideoDetails, Video, Channel } from './types';
 
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || '';
 
 export default function App() {
   const [videos, setVideos] = useState<Video[]>([]);
+  const [recommendations, setRecommendations] = useState<Video[]>([]);
   const [currentChannel, setCurrentChannel] = useState<Channel | null>(null);
   const [selectedVideo, setSelectedVideo] = useState<Video | null>(null);
   const [isAdBlockActive, setIsAdBlockActive] = useState(true);
@@ -38,6 +45,93 @@ export default function App() {
   const [showAdBlockNotification, setShowAdBlockNotification] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [apiError, setApiError] = useState<string | null>(null);
+  const [player, setPlayer] = useState<any>(null);
+  const [isApiReady, setIsApiReady] = useState(false);
+  const [playlist, setPlaylist] = useState<Video[]>([]);
+  const [userPlaylist, setUserPlaylist] = useState<Video[]>(() => {
+    try {
+      const saved = localStorage.getItem('sapuads_user_playlist');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {
+      return [];
+    }
+  });
+  const [isLooping, setIsLooping] = useState(true);
+  const [useNoCookie, setUseNoCookie] = useState(true);
+  const [activeTab, setActiveTab] = useState<'home' | 'trending' | 'playlist'>('home');
+  const [channelCache, setChannelCache] = useState<Record<string, Video[]>>(() => {
+    try {
+      const saved = localStorage.getItem('sapuads_channel_cache');
+      return saved ? JSON.parse(saved) : {};
+    } catch (e) {
+      return {};
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('sapuads_channel_cache', JSON.stringify(channelCache));
+    } catch (e) {
+      console.warn("Failed to save cache to localStorage", e);
+    }
+  }, [channelCache]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('sapuads_user_playlist', JSON.stringify(userPlaylist));
+    } catch (e) {
+      console.warn("Failed to save playlist to localStorage", e);
+    }
+  }, [userPlaylist]);
+
+  useEffect(() => {
+    // Enrich placeholder videos in user playlist
+    const placeholders = userPlaylist.filter(v => v.title === "Video dari Link");
+    if (placeholders.length > 0) {
+      const timer = setTimeout(() => {
+        placeholders.forEach(placeholder => {
+          getVideoDetails(placeholder.id, YOUTUBE_API_KEY).then(enriched => {
+            if (enriched) {
+              setUserPlaylist(prev => prev.map(v => v.id === placeholder.id ? enriched : v));
+              setSelectedVideo(prev => prev?.id === placeholder.id ? enriched : prev);
+            }
+          }).catch(() => {});
+        });
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [userPlaylist.length]); // Re-run when items are added
+
+  const recommendationsRef = useRef<Video[]>([]);
+  const videosRef = useRef<Video[]>([]);
+  const selectedVideoRef = useRef<Video | null>(null);
+  const playlistRef = useRef<Video[]>([]);
+  const userPlaylistRef = useRef<Video[]>([]);
+  const isLoopingRef = useRef<boolean>(true);
+
+  useEffect(() => {
+    recommendationsRef.current = recommendations;
+  }, [recommendations]);
+
+  useEffect(() => {
+    videosRef.current = videos;
+  }, [videos]);
+
+  useEffect(() => {
+    selectedVideoRef.current = selectedVideo;
+  }, [selectedVideo]);
+
+  useEffect(() => {
+    playlistRef.current = playlist;
+  }, [playlist]);
+
+  useEffect(() => {
+    userPlaylistRef.current = userPlaylist;
+  }, [userPlaylist]);
+
+  useEffect(() => {
+    isLoopingRef.current = isLooping;
+  }, [isLooping]);
 
   const fetchVideos = async (query: string = 'trending') => {
     if (!YOUTUBE_API_KEY) {
@@ -53,14 +147,133 @@ export default function App() {
       setApiError(error);
     } else {
       setVideos(results);
-      setCurrentChannel(channel || null);
+      setPlaylist(results);
+      // Only show channel profile if it's a specific search, not the default trending home page
+      setCurrentChannel(query === 'trending' ? null : (channel || null));
     }
     setIsLoading(false);
   };
 
   useEffect(() => {
     fetchVideos();
+    
+    // Load YouTube IFrame API
+    const tag = document.createElement('script');
+    tag.src = "https://www.youtube.com/iframe_api";
+    const firstScriptTag = document.getElementsByTagName('script')[0];
+    firstScriptTag.parentNode?.insertBefore(tag, firstScriptTag);
+
+    (window as any).onYouTubeIframeAPIReady = () => {
+      console.log('YouTube API Ready');
+      setIsApiReady(true);
+    };
+
+    // Check if already loaded
+    if ((window as any).YT && (window as any).YT.Player) {
+      setIsApiReady(true);
+    }
   }, []);
+
+  useEffect(() => {
+    if (selectedVideo && isApiReady) {
+      if (player && typeof player.loadVideoById === 'function') {
+        try {
+          player.loadVideoById(selectedVideo.id);
+        } catch (e) {
+          console.error("Error loading video:", e);
+          createPlayer();
+        }
+      } else {
+        createPlayer();
+      }
+    }
+  }, [selectedVideo, isApiReady]);
+
+  const createPlayer = () => {
+    if (!selectedVideo) return;
+    
+    // Clean up existing player if any
+    const playerContainer = document.getElementById('youtube-player');
+    if (playerContainer) {
+      playerContainer.innerHTML = '';
+    }
+
+    const newPlayer = new (window as any).YT.Player('youtube-player', {
+      height: '100%',
+      width: '100%',
+      videoId: selectedVideo.id,
+      host: useNoCookie ? 'https://www.youtube-nocookie.com' : 'https://www.youtube.com',
+      playerVars: {
+        autoplay: 1,
+        rel: 0,
+        modestbranding: 1,
+        iv_load_policy: 3,
+        enablejsapi: 1,
+        origin: window.location.origin
+      },
+      events: {
+        onStateChange: (event: any) => {
+          // YT.PlayerState.ENDED is 0
+          if (event.data === 0) {
+            playNextVideo();
+          }
+        },
+        onError: (e: any) => {
+          console.error("YouTube Player Error:", e);
+        }
+      }
+    });
+    setPlayer(newPlayer);
+  };
+
+  const playNextVideo = () => {
+    console.log("Autoplay: Attempting to play next video");
+    
+    // Prioritize user playlist if it has videos and the current video is in it
+    const isInUserPlaylist = userPlaylistRef.current.some(v => v.id === selectedVideoRef.current?.id);
+    const currentList = isInUserPlaylist 
+      ? userPlaylistRef.current 
+      : (playlistRef.current.length > 0 ? playlistRef.current : videosRef.current);
+    
+    const currentIndex = currentList.findIndex(v => v.id === selectedVideoRef.current?.id);
+    
+    if (currentIndex !== -1 && currentIndex < currentList.length - 1) {
+      const nextVideo = currentList[currentIndex + 1];
+      console.log("Autoplay: Playing next in sequence", nextVideo.title);
+      handleVideoSelect(nextVideo);
+    } else if (currentList.length > 0 && isLoopingRef.current) {
+      // Loop back to start if looping is enabled
+      const nextVideo = currentList[0];
+      console.log("Autoplay: Reached end, looping to start", nextVideo.title);
+      handleVideoSelect(nextVideo);
+    } else {
+      console.log("Autoplay: End of list or looping disabled");
+    }
+  };
+
+  const addToPlaylist = (video: Video) => {
+    if (!userPlaylist.some(v => v.id === video.id)) {
+      setUserPlaylist(prev => [...prev, video]);
+      
+      // If it's a placeholder, try to enrich it immediately
+      if (video.title === "Video dari Link" || video.title === "Loading video details...") {
+        getVideoDetails(video.id, YOUTUBE_API_KEY).then(enriched => {
+          if (enriched) {
+            setUserPlaylist(prev => prev.map(v => v.id === video.id ? enriched : v));
+            setSelectedVideo(prev => prev?.id === video.id ? enriched : prev);
+          }
+        }).catch(() => {});
+      }
+    }
+  };
+
+  const removeFromPlaylist = (videoId: string) => {
+    setUserPlaylist(prev => prev.filter(v => v.id !== videoId));
+  };
+
+  const toggleLoop = () => {
+    setIsLooping(prev => !prev);
+  };
 
   useEffect(() => {
     if (isAdBlockActive) {
@@ -71,9 +284,38 @@ export default function App() {
   }, [isAdBlockActive]);
 
   const extractVideoId = (url: string) => {
+    if (!url) return null;
+    
+    // Handle YouTube Shorts
+    if (url.includes('/shorts/')) {
+      const parts = url.split('/shorts/');
+      const id = parts[1]?.split(/[?#]/)[0];
+      if (id && id.length === 11) return id;
+    }
+    
+    // Handle standard and mobile URLs
     const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
     const match = url.match(regExp);
-    return (match && match[2].length === 11) ? match[2] : null;
+    
+    if (match && match[2].length === 11) {
+      return match[2];
+    }
+
+    // Fallback for other formats
+    try {
+      const urlObj = new URL(url);
+      if (urlObj.hostname.includes('youtube.com')) {
+        return urlObj.searchParams.get('v');
+      }
+      if (urlObj.hostname.includes('youtu.be')) {
+        return urlObj.pathname.slice(1);
+      }
+    } catch (e) {
+      // Not a valid URL, maybe just an ID
+      if (url.length === 11) return url;
+    }
+    
+    return null;
   };
 
   const handleSearch = (e: React.FormEvent) => {
@@ -82,14 +324,74 @@ export default function App() {
     
     const videoId = extractVideoId(searchQuery);
     if (videoId) {
-      // If it's a URL, we can just set the video state directly with minimal info
-      // or search for it. For simplicity and better UX, let's search for it
-      // so we get full metadata.
-      fetchVideos(searchQuery);
+      // Clear errors and stop loading immediately for direct links
+      setApiError(null);
+      setIsLoading(false);
+      
+      const placeholderVideo: Video = {
+        id: videoId,
+        title: "Loading video details...",
+        thumbnail: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
+        videoUrl: `https://www.youtube-nocookie.com/embed/${videoId}`,
+        channelName: "Loading channel...",
+        channelId: "",
+        channelAvatar: "https://www.youtube.com/s/desktop/ce11e301/img/favicon_144x144.png",
+        views: "Fetching views...",
+        postedAt: "Fetching date...",
+        duration: "--:--",
+        description: "Memutar langsung dari link. Sedang mengambil informasi video..."
+      };
+      
+      setSelectedVideo(placeholderVideo);
+      setRecommendations([]);
+      setPlaylist([placeholderVideo]);
+      
+      // Try to enrich data in background
+      getVideoDetails(videoId, YOUTUBE_API_KEY).then((enriched) => {
+        if (enriched) {
+          setSelectedVideo(prev => prev?.id === videoId ? enriched : prev);
+          setPlaylist(prev => prev.map(v => v.id === videoId ? enriched : v));
+          setUserPlaylist(prev => prev.map(v => v.id === videoId ? enriched : v));
+        }
+      }).catch(() => {
+        // Fallback to basic placeholder if everything fails
+        const finalPlaceholder = { ...placeholderVideo, title: "Video dari Link", views: "Direct Play", postedAt: "Sekarang" };
+        setSelectedVideo(prev => prev?.id === videoId ? finalPlaceholder : prev);
+        setPlaylist(prev => prev.map(v => v.id === videoId ? finalPlaceholder : v));
+      });
     } else {
       setSelectedVideo(null);
       setCurrentChannel(null);
       fetchVideos(searchQuery);
+    }
+  };
+
+  const handleVideoSelect = async (video: Video) => {
+    setSelectedVideo(video);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    
+    // Check cache first
+    if (channelCache[video.channelId]) {
+      const cachedVideos = channelCache[video.channelId];
+      setRecommendations(cachedVideos.filter(v => v.id !== video.id));
+      setPlaylist(cachedVideos);
+      return;
+    }
+
+    // Fetch videos from the same channel for recommendations
+    const { videos: channelResults } = await getChannelVideos(video.channelId, YOUTUBE_API_KEY);
+    if (channelResults.length > 0) {
+      setRecommendations(channelResults.filter(v => v.id !== video.id));
+      setPlaylist(channelResults); // Update playlist to the channel's videos
+      
+      // Update cache
+      setChannelCache(prev => ({
+        ...prev,
+        [video.channelId]: channelResults
+      }));
+    } else {
+      // Fallback to current search results if channel fetch fails
+      setRecommendations(videos.filter(v => v.id !== video.id));
     }
   };
 
@@ -103,11 +405,11 @@ export default function App() {
   return (
     <div className="flex flex-col h-screen bg-[#0f0f0f] text-white overflow-hidden">
       {/* Header */}
-      <header className="flex items-center justify-between px-4 py-2 sticky top-0 bg-[#0f0f0f] z-50">
-        <div className="flex items-center gap-4">
+      <header className="flex items-center justify-between px-2 sm:px-4 py-2 sticky top-0 bg-[#0f0f0f] z-50 border-b border-white/5">
+        <div className="flex items-center gap-2 sm:gap-4">
           <button 
             onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-            className="p-2 hover:bg-white/10 rounded-full transition-colors"
+            className="p-2 hover:bg-white/10 rounded-full transition-colors hidden md:block"
           >
             <Menu size={24} />
           </button>
@@ -120,51 +422,43 @@ export default function App() {
             }}
           >
             <div className="bg-red-600 p-1 rounded-lg">
-              <PlaySquare size={20} fill="white" />
+              <PlaySquare size={18} sm:size={20} fill="white" />
             </div>
-            <span className="text-xl font-bold tracking-tighter">SapuAds</span>
+            <span className="text-lg sm:text-xl font-bold tracking-tighter">SapuAds</span>
           </div>
         </div>
 
-        <form onSubmit={handleSearch} className="flex items-center flex-1 max-w-2xl px-4">
+        <form onSubmit={handleSearch} className="flex items-center flex-1 max-w-2xl px-2 sm:px-4">
           <div className="flex items-center flex-1 bg-[#121212] border border-white/10 rounded-full overflow-hidden focus-within:border-blue-500">
             <input 
               type="text" 
-              placeholder="Search YouTube" 
-              className="w-full bg-transparent px-4 py-2 outline-none text-white"
+              placeholder="Search..." 
+              className="w-full bg-transparent px-3 sm:px-4 py-1.5 sm:py-2 outline-none text-sm sm:text-base text-white"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
             />
-            <button type="submit" className="bg-white/10 px-5 py-2 border-l border-white/10 hover:bg-white/20 transition-colors">
-              <Search size={20} />
+            <button type="submit" className="bg-white/10 px-3 sm:px-5 py-1.5 sm:py-2 border-l border-white/10 hover:bg-white/20 transition-colors">
+              <Search size={18} sm:size={20} />
             </button>
           </div>
-          <button type="button" className="ml-4 p-2 bg-white/5 hover:bg-white/10 rounded-full transition-colors">
-            <Mic size={20} />
-          </button>
         </form>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-1 sm:gap-3">
           <button 
             onClick={() => setIsAdBlockActive(!isAdBlockActive)}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-full transition-all ${
+            className={`flex items-center gap-2 p-2 sm:px-3 sm:py-1.5 rounded-full transition-all ${
               isAdBlockActive ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-red-500/20 text-red-400 border border-red-500/30'
             }`}
+            title={isAdBlockActive ? 'Ad-Blocker Active' : 'Ad-Blocker Disabled'}
           >
             {isAdBlockActive ? <ShieldCheck size={18} /> : <ShieldAlert size={18} />}
-            <span className="text-sm font-medium hidden sm:inline">
-              {isAdBlockActive ? 'Ad-Blocker Active' : 'Ad-Blocker Disabled'}
+            <span className="text-xs font-medium hidden lg:inline">
+              {isAdBlockActive ? 'Ad-Block' : 'Ads On'}
             </span>
           </button>
-          <button className="p-2 hover:bg-white/10 rounded-full transition-colors hidden sm:block">
-            <VideoIcon size={24} />
-          </button>
-          <button className="p-2 hover:bg-white/10 rounded-full transition-colors hidden sm:block">
-            <Bell size={24} />
-          </button>
-          <button className="p-1 hover:bg-white/10 rounded-full transition-colors">
-            <div className="w-8 h-8 bg-indigo-600 rounded-full flex items-center justify-center">
-              <User size={20} />
+          <button className="p-2 hover:bg-white/10 rounded-full transition-colors">
+            <div className="w-7 h-7 sm:w-8 sm:h-8 bg-indigo-600 rounded-full flex items-center justify-center">
+              <User size={16} sm:size={20} />
             </div>
           </button>
         </div>
@@ -173,16 +467,42 @@ export default function App() {
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar */}
         <aside className={`${isSidebarOpen ? 'w-64' : 'w-20'} hidden md:flex flex-col gap-2 p-2 overflow-y-auto transition-all duration-300 border-r border-white/5`}>
-          <SidebarItem icon={<Home size={22} />} label="Home" active={!selectedVideo && !currentChannel} onClick={() => {
-            setSelectedVideo(null);
-            setCurrentChannel(null);
-            fetchVideos();
-          }} isOpen={isSidebarOpen} />
-          <SidebarItem icon={<Compass size={22} />} label="Explore" isOpen={isSidebarOpen} />
-          <SidebarItem icon={<PlaySquare size={22} />} label="Subscriptions" isOpen={isSidebarOpen} />
+          <SidebarItem 
+            icon={<Home size={22} />} 
+            label="Home" 
+            active={activeTab === 'home' && !selectedVideo && !currentChannel} 
+            onClick={() => {
+              setActiveTab('home');
+              setSelectedVideo(null);
+              setCurrentChannel(null);
+              fetchVideos();
+            }} 
+            isOpen={isSidebarOpen} 
+          />
+          <SidebarItem 
+            icon={<Compass size={22} />} 
+            label="Trending" 
+            active={activeTab === 'trending'}
+            onClick={() => {
+              setActiveTab('trending');
+              setSelectedVideo(null);
+              setCurrentChannel(null);
+              fetchVideos('trending');
+            }}
+            isOpen={isSidebarOpen} 
+          />
+          <SidebarItem 
+            icon={<List size={22} />} 
+            label="Playlist" 
+            active={activeTab === 'playlist'}
+            onClick={() => {
+              setActiveTab('playlist');
+              setSelectedVideo(null);
+              setCurrentChannel(null);
+            }}
+            isOpen={isSidebarOpen} 
+          />
           <hr className="border-white/10 my-2" />
-          <SidebarItem icon={<Clock size={22} />} label="History" isOpen={isSidebarOpen} />
-          <SidebarItem icon={<ThumbsUp size={22} />} label="Liked Videos" isOpen={isSidebarOpen} />
           {isSidebarOpen && (
             <div className="mt-auto p-4 bg-white/5 rounded-xl border border-white/10">
               <h3 className="text-sm font-bold mb-2 flex items-center gap-2">
@@ -195,12 +515,283 @@ export default function App() {
         </aside>
 
         {/* Main Content */}
-        <main className="flex-1 overflow-y-auto bg-[#0f0f0f] p-4">
+        <main className="flex-1 overflow-y-auto bg-[#0f0f0f] p-2 sm:p-4 pb-20 md:pb-4">
           {isLoading ? (
             <div className="h-full flex flex-col items-center justify-center gap-4">
               <Loader2 size={48} className="animate-spin text-red-600" />
               <p className="text-white/60 font-medium">Fetching YouTube videos...</p>
             </div>
+          ) : selectedVideo ? (
+            <div className="max-w-[1600px] mx-auto">
+              <div className="flex flex-col lg:flex-row gap-6">
+                {/* Player Column */}
+                <div className="flex-1">
+                  <div className="aspect-video w-full bg-black rounded-xl overflow-hidden shadow-2xl relative group">
+                    <div id="youtube-player" className="w-full h-full" />
+                  </div>
+                  
+                  <div className="mt-4">
+                    <h1 className="text-lg sm:text-xl font-bold mb-2" dangerouslySetInnerHTML={{ __html: selectedVideo.title }} />
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div className="flex items-center justify-between sm:justify-start gap-3">
+                        <div className="flex items-center gap-3">
+                          <img 
+                            src={selectedVideo.channelAvatar} 
+                            alt={selectedVideo.channelName} 
+                            className="w-9 h-9 sm:w-10 sm:h-10 rounded-full cursor-pointer hover:opacity-80 transition-opacity"
+                            referrerPolicy="no-referrer"
+                            onClick={(e) => handleChannelClick(e, selectedVideo.channelName)}
+                          />
+                          <div 
+                            className="cursor-pointer group/channel"
+                            onClick={(e) => handleChannelClick(e, selectedVideo.channelName)}
+                          >
+                            <p className="font-bold text-sm sm:text-base group-hover/channel:text-blue-400 transition-colors">{selectedVideo.channelName}</p>
+                            <p className="text-[10px] sm:text-xs text-white/60">YouTube Creator</p>
+                          </div>
+                        </div>
+                        <button className="bg-white text-black px-4 py-1.5 sm:py-2 rounded-full font-bold text-xs sm:text-sm hover:bg-white/90 transition-colors">
+                          Subscribe
+                        </button>
+                      </div>
+                      
+                      <div className="flex items-center gap-2 overflow-x-auto pb-2 sm:pb-0 no-scrollbar">
+                        <button 
+                          onClick={toggleLoop}
+                          className={`flex items-center gap-2 px-3 sm:px-4 py-1.5 sm:py-2 rounded-full transition-colors whitespace-nowrap ${isLooping ? 'bg-blue-600 text-white' : 'bg-white/10 text-white/60 hover:bg-white/20'}`}
+                          title={isLooping ? "Looping Enabled" : "Looping Disabled"}
+                        >
+                          <Repeat size={16} className={isLooping ? 'animate-spin-slow' : ''} />
+                          <span className="text-xs sm:text-sm font-medium">Loop</span>
+                        </button>
+                        <button 
+                          onClick={playNextVideo}
+                          className="flex items-center gap-2 bg-white/10 px-3 sm:px-4 py-1.5 sm:py-2 rounded-full hover:bg-white/20 transition-colors whitespace-nowrap"
+                          title="Play Next Video"
+                        >
+                          <PlaySquare size={16} className="text-blue-400" />
+                          <span className="text-xs sm:text-sm font-medium">Next</span>
+                        </button>
+                        <button 
+                          onClick={() => addToPlaylist(selectedVideo)}
+                          className={`flex items-center gap-2 px-3 sm:px-4 py-1.5 sm:py-2 rounded-full transition-all whitespace-nowrap ${
+                            userPlaylist.some(v => v.id === selectedVideo.id)
+                              ? 'bg-emerald-600 text-white' 
+                              : 'bg-white/10 text-white/60 hover:bg-white/20'
+                          }`}
+                          title={userPlaylist.some(v => v.id === selectedVideo.id) ? "Saved to Playlist" : "Save to Playlist"}
+                        >
+                          {userPlaylist.some(v => v.id === selectedVideo.id) ? <ShieldCheck size={16} /> : <Plus size={16} />}
+                          <span className="text-xs sm:text-sm font-medium">
+                            {userPlaylist.some(v => v.id === selectedVideo.id) ? 'Saved' : 'Save'}
+                          </span>
+                        </button>
+                        <button 
+                          onClick={() => {
+                            setUseNoCookie(!useNoCookie);
+                            setTimeout(createPlayer, 100);
+                          }}
+                          className={`flex items-center gap-2 px-3 sm:px-4 py-1.5 sm:py-2 rounded-full transition-colors whitespace-nowrap ${!useNoCookie ? 'bg-orange-600 text-white' : 'bg-white/10 text-white/60 hover:bg-white/20'}`}
+                          title="Click if video is blank/black"
+                        >
+                          <ShieldAlert size={16} />
+                          <span className="text-xs sm:text-sm font-medium">Fix Blank</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 bg-white/5 p-4 rounded-xl">
+                    <div className="flex gap-2 text-sm font-bold mb-1">
+                      <span>{selectedVideo.views}</span>
+                      <span>•</span>
+                      <span>Published on {selectedVideo.postedAt}</span>
+                    </div>
+                    <p className="text-sm text-white/80 whitespace-pre-wrap line-clamp-4 hover:line-clamp-none transition-all cursor-pointer">
+                      {selectedVideo.description}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Recommendations Column */}
+                <div className="w-full lg:w-[400px] flex flex-col gap-3">
+                  <div className="flex items-center justify-between mb-1">
+                    <h3 className="font-bold">
+                      {userPlaylist.length > 0 ? 'My Playlist' : 'Up Next'}
+                    </h3>
+                    {userPlaylist.length > 0 && (
+                      <span className="text-[10px] bg-blue-500/20 text-blue-400 px-2 py-0.5 rounded-full font-bold">
+                        {userPlaylist.length} VIDEOS
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Show User Playlist first if it has items */}
+                  {userPlaylist.length > 0 ? (
+                    <div className="flex flex-col gap-2 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
+                      {userPlaylist.map((video) => (
+                        <div 
+                          key={`playlist-sidebar-${video.id}`} 
+                          className={`flex gap-2 cursor-pointer group p-2 rounded-lg transition-all border ${selectedVideo.id === video.id ? 'bg-blue-500/10 border-blue-500/30' : 'hover:bg-white/5 border-transparent'}`}
+                          onClick={() => handleVideoSelect(video)}
+                        >
+                          <div className="relative flex-shrink-0 w-32 aspect-video rounded-lg overflow-hidden bg-white/5">
+                            <img 
+                              src={video.thumbnail} 
+                              alt={video.title}
+                              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                              referrerPolicy="no-referrer"
+                            />
+                            <div className="absolute bottom-1 right-1 bg-black/80 text-[10px] font-bold px-1 rounded">
+                              {video.duration}
+                            </div>
+                            {selectedVideo.id === video.id && (
+                              <div className="absolute inset-0 bg-blue-500/20 flex items-center justify-center">
+                                <div className="bg-blue-500 p-1 rounded-full shadow-lg">
+                                  <PlaySquare size={16} className="text-white" />
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                          <div className="flex flex-col gap-1 overflow-hidden flex-1">
+                            <h4 className={`text-xs font-bold line-clamp-2 leading-snug transition-colors ${selectedVideo.id === video.id ? 'text-blue-400' : 'group-hover:text-blue-400'}`} dangerouslySetInnerHTML={{ __html: video.title }} />
+                            <p className="text-[10px] text-white/60 truncate">{video.channelName}</p>
+                            <div className="flex items-center justify-between mt-auto">
+                              <span className="text-[9px] text-white/40">{video.views}</span>
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  removeFromPlaylist(video.id);
+                                }}
+                                className="p-1 text-white/20 hover:text-red-500 transition-colors"
+                                title="Remove from playlist"
+                              >
+                                <Trash2 size={12} />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {/* Recommendations section */}
+                  {recommendations.length > 0 && (
+                    <div className="flex flex-col gap-3">
+                      <div className="flex items-center gap-2 mt-2">
+                        <div className="h-px bg-white/10 flex-1" />
+                        <span className="text-[10px] font-bold text-white/20 uppercase tracking-wider">Recommendations</span>
+                        <div className="h-px bg-white/10 flex-1" />
+                      </div>
+                      {recommendations.map((video) => (
+                        <div 
+                          key={`rec-${video.id}`} 
+                          className="flex gap-2 cursor-pointer group hover:bg-white/5 p-2 rounded-lg transition-colors"
+                          onClick={() => handleVideoSelect(video)}
+                        >
+                          <div className="relative flex-shrink-0 w-32 aspect-video rounded-lg overflow-hidden bg-white/5">
+                            <img 
+                              src={video.thumbnail} 
+                              alt={video.title}
+                              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                              referrerPolicy="no-referrer"
+                            />
+                            <div className="absolute bottom-1 right-1 bg-black/80 text-[10px] font-bold px-1 rounded">
+                              {video.duration}
+                            </div>
+                          </div>
+                          <div className="flex flex-col gap-1 overflow-hidden flex-1">
+                            <h4 className="text-xs font-bold line-clamp-2 leading-snug group-hover:text-blue-400 transition-colors" dangerouslySetInnerHTML={{ __html: video.title }} />
+                            <p className="text-[10px] text-white/60 truncate">{video.channelName}</p>
+                            <div className="flex gap-1 text-[9px] text-white/40">
+                              <span>{video.views}</span>
+                              <span>•</span>
+                              <span>{video.postedAt}</span>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {userPlaylist.length === 0 && recommendations.length === 0 && (
+                    <div className="p-8 bg-white/5 rounded-xl border border-white/10 text-center">
+                      <PlaySquare className="mx-auto mb-3 text-white/10" size={32} />
+                      <p className="text-sm font-bold text-white/60">No videos available</p>
+                      <p className="text-xs text-white/40 mt-1">Add videos to your playlist to see them here</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : activeTab === 'playlist' ? (
+            <motion.div 
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="max-w-[1600px] mx-auto"
+            >
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 sm:mb-8">
+            <div>
+              <h1 className="text-2xl sm:text-3xl font-bold mb-1 sm:mb-2">My Playlist</h1>
+              <p className="text-xs sm:text-sm text-white/60">{userPlaylist.length} videos • Saved locally</p>
+            </div>
+            <div className="flex gap-2 sm:gap-4 overflow-x-auto pb-2 sm:pb-0 no-scrollbar">
+              <button 
+                onClick={toggleLoop}
+                className={`flex items-center gap-2 px-4 sm:px-6 py-2 sm:py-2.5 rounded-full font-bold text-xs sm:text-base transition-all whitespace-nowrap ${isLooping ? 'bg-blue-600 text-white' : 'bg-white/10 text-white/60'}`}
+              >
+                <Repeat size={18} sm:size={20} />
+                {isLooping ? 'Looping On' : 'Looping Off'}
+              </button>
+              <button 
+                onClick={() => setUserPlaylist([])}
+                className="flex items-center gap-2 px-4 sm:px-6 py-2 sm:py-2.5 bg-red-500/10 text-red-400 border border-red-500/20 rounded-full font-bold text-xs sm:text-base hover:bg-red-500/20 transition-all whitespace-nowrap"
+              >
+                <Trash2 size={18} sm:size={20} />
+                Clear All
+              </button>
+            </div>
+          </div>
+
+              {userPlaylist.length > 0 ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-4 gap-y-8">
+                  {userPlaylist.map(video => (
+                    <div key={video.id} className="relative group">
+                      <VideoCard 
+                        video={video} 
+                        onClick={() => handleVideoSelect(video)} 
+                        onChannelClick={handleChannelClick}
+                        onAddToPlaylist={() => {}}
+                        isInPlaylist={true}
+                      />
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); removeFromPlaylist(video.id); }}
+                        className="absolute top-2 right-2 p-2 bg-red-600 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity shadow-lg z-10"
+                        title="Remove from Playlist"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="h-[60vh] flex flex-col items-center justify-center text-center gap-4">
+                  <div className="bg-white/5 p-8 rounded-full">
+                    <List size={64} className="text-white/20" />
+                  </div>
+                  <div>
+                    <h2 className="text-2xl font-bold mb-2">Your playlist is empty</h2>
+                    <p className="text-white/60 max-w-sm">Add videos to your playlist to watch them in sequence without ads.</p>
+                  </div>
+                  <button 
+                    onClick={() => setActiveTab('home')}
+                    className="mt-4 bg-white text-black px-8 py-3 rounded-full font-bold hover:bg-white/90 transition-all"
+                  >
+                    Explore Videos
+                  </button>
+                </div>
+              )}
+            </motion.div>
           ) : apiError ? (
             <div className="h-full flex flex-col items-center justify-center gap-6 text-center max-w-md mx-auto">
               <div className="bg-red-500/20 p-6 rounded-full">
@@ -208,18 +799,35 @@ export default function App() {
               </div>
               <div>
                 <h2 className="text-2xl font-bold mb-2">YouTube API Error</h2>
-                <p className="text-red-400 font-mono text-sm bg-red-500/10 p-3 rounded-lg border border-red-500/20">
-                  {apiError}
-                </p>
-                <p className="text-white/60 mt-4 text-sm">
-                  This usually happens if the API Key is invalid, has expired, or the YouTube Data API v3 is not enabled in your Google Cloud project.
-                </p>
+                <div className="text-red-400 font-mono text-sm bg-red-500/10 p-3 rounded-lg border border-red-500/20 mb-4">
+                  {apiError.includes('quota') ? (
+                    <div className="flex flex-col gap-2">
+                      <p className="font-bold">Quota Exceeded</p>
+                      <p className="text-xs opacity-80">
+                        Batas harian pencarian video sudah habis. 
+                      </p>
+                      <p className="text-xs font-bold text-emerald-400 mt-2">
+                        TAPI TENANG! Anda masih bisa menonton tanpa iklan.
+                      </p>
+                    </div>
+                  ) : (
+                    apiError
+                  )}
+                </div>
+                <div className="bg-emerald-500/10 p-4 rounded-xl border border-emerald-500/20 mb-6">
+                  <p className="text-emerald-400 text-sm font-bold mb-2 flex items-center justify-center gap-2">
+                    <PlaySquare size={16} /> CARA TETAP NONTON TANPA IKLAN:
+                  </p>
+                  <p className="text-white/70 text-xs leading-relaxed">
+                    Copy link video dari YouTube, lalu <strong>PASTE</strong> di kotak pencarian di atas dan tekan Enter. Video akan langsung diputar tanpa iklan!
+                  </p>
+                </div>
               </div>
               <button 
                 onClick={() => fetchVideos()}
                 className="bg-white text-black px-6 py-2 rounded-full font-bold hover:bg-white/90 transition-colors"
               >
-                Try Again
+                Coba Segarkan
               </button>
             </div>
           ) : !YOUTUBE_API_KEY ? (
@@ -255,13 +863,7 @@ export default function App() {
                     >
                       <div className="lg:col-span-2 flex flex-col gap-4">
                         <div className="aspect-video bg-black rounded-xl overflow-hidden relative group shadow-2xl">
-                          <iframe 
-                            src={`${selectedVideo.videoUrl}?autoplay=1&rel=0&modestbranding=1&iv_load_policy=3`}
-                            title={selectedVideo.title}
-                            className="w-full h-full border-0"
-                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                            allowFullScreen
-                          />
+                          <div id="youtube-player" className="w-full h-full" />
                           {isAdBlockActive && (
                             <div className="absolute top-4 left-4 bg-emerald-500/90 text-white px-3 py-1 rounded-full text-xs font-bold flex items-center gap-2 backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
                               <ShieldCheck size={14} />
@@ -303,6 +905,22 @@ export default function App() {
                                   <ThumbsUp size={18} className="rotate-180" />
                                 </button>
                               </div>
+                              <button 
+                                onClick={toggleLoop}
+                                className={`flex items-center gap-2 px-4 py-2 rounded-full transition-colors ${isLooping ? 'bg-blue-600 text-white' : 'bg-white/10 text-white/60 hover:bg-white/20'}`}
+                                title={isLooping ? "Looping Enabled" : "Looping Disabled"}
+                              >
+                                <Repeat size={18} className={isLooping ? 'animate-spin-slow' : ''} />
+                                <span className="text-sm font-medium">Loop</span>
+                              </button>
+                              <button 
+                                onClick={playNextVideo}
+                                className="flex items-center gap-2 bg-white/10 px-4 py-2 rounded-full hover:bg-white/20 transition-colors"
+                                title="Play Next Video"
+                              >
+                                <PlaySquare size={18} className="text-blue-400" />
+                                <span className="text-sm font-medium">Next</span>
+                              </button>
                               <button className="flex items-center gap-2 bg-white/10 px-4 py-2 rounded-full hover:bg-white/20 transition-colors">
                                 <Share2 size={18} />
                                 <span className="text-sm font-medium">Share</span>
@@ -329,11 +947,11 @@ export default function App() {
                       {/* Recommendations */}
                       <div className="flex flex-col gap-4">
                         <h2 className="font-bold text-lg">Up Next</h2>
-                        {videos.filter(v => v.id !== selectedVideo.id).map(video => (
+                        {(recommendations.length > 0 ? recommendations : videos.filter(v => v.id !== selectedVideo.id)).map(video => (
                           <div 
                             key={video.id} 
                             className="flex gap-3 cursor-pointer group"
-                            onClick={() => setSelectedVideo(video)}
+                            onClick={() => handleVideoSelect(video)}
                           >
                             <div className="relative w-40 h-24 flex-shrink-0 bg-white/5 rounded-lg overflow-hidden">
                               <img 
@@ -424,8 +1042,10 @@ export default function App() {
                           <VideoCard 
                             key={video.id} 
                             video={video} 
-                            onClick={() => setSelectedVideo(video)} 
+                            onClick={() => handleVideoSelect(video)} 
                             onChannelClick={handleChannelClick}
+                            onAddToPlaylist={() => addToPlaylist(video)}
+                            isInPlaylist={userPlaylist.some(v => v.id === video.id)}
                           />
                         ))}
                       </div>
@@ -435,6 +1055,52 @@ export default function App() {
           )}
         </main>
       </div>
+
+      {/* Bottom Navigation for Mobile */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-[#0f0f0f] border-t border-white/10 flex items-center justify-around py-2 z-50">
+        <button 
+          onClick={() => {
+            setActiveTab('home');
+            setSelectedVideo(null);
+            setCurrentChannel(null);
+            fetchVideos();
+          }}
+          className={`flex flex-col items-center gap-1 ${activeTab === 'home' && !selectedVideo && !currentChannel ? 'text-white' : 'text-white/40'}`}
+        >
+          <Home size={20} />
+          <span className="text-[10px]">Home</span>
+        </button>
+        <button 
+          onClick={() => {
+            setActiveTab('trending');
+            setSelectedVideo(null);
+            setCurrentChannel(null);
+            fetchVideos('trending');
+          }}
+          className={`flex flex-col items-center gap-1 ${activeTab === 'trending' ? 'text-white' : 'text-white/40'}`}
+        >
+          <Compass size={20} />
+          <span className="text-[10px]">Trending</span>
+        </button>
+        <button 
+          onClick={() => {
+            setActiveTab('playlist');
+            setSelectedVideo(null);
+            setCurrentChannel(null);
+          }}
+          className={`flex flex-col items-center gap-1 ${activeTab === 'playlist' ? 'text-white' : 'text-white/40'}`}
+        >
+          <List size={20} />
+          <span className="text-[10px]">Playlist</span>
+        </button>
+        <button 
+          onClick={() => setIsAdBlockActive(!isAdBlockActive)}
+          className={`flex flex-col items-center gap-1 ${isAdBlockActive ? 'text-emerald-400' : 'text-red-400'}`}
+        >
+          {isAdBlockActive ? <ShieldCheck size={20} /> : <ShieldAlert size={20} />}
+          <span className="text-[10px]">{isAdBlockActive ? 'Safe' : 'Ads'}</span>
+        </button>
+      </nav>
 
       {/* Ad-Blocker Notification */}
       <AnimatePresence>
@@ -485,10 +1151,12 @@ const VideoCard: React.FC<{
   video: Video; 
   onClick: () => void;
   onChannelClick: (e: React.MouseEvent, name: string) => void;
-}> = ({ video, onClick, onChannelClick }) => {
+  onAddToPlaylist: () => void;
+  isInPlaylist: boolean;
+}> = ({ video, onClick, onChannelClick, onAddToPlaylist, isInPlaylist }) => {
   return (
     <div 
-      className="flex flex-col gap-3 cursor-pointer group"
+      className="flex flex-col gap-3 cursor-pointer group relative"
       onClick={onClick}
     >
       <div className="relative aspect-video bg-white/5 rounded-xl overflow-hidden">
@@ -501,6 +1169,20 @@ const VideoCard: React.FC<{
         <span className="absolute bottom-2 right-2 bg-black/80 text-xs font-bold px-1.5 py-0.5 rounded">
           {video.duration}
         </span>
+        
+        {/* Add to Playlist Button */}
+        <button 
+          onClick={(e) => { e.stopPropagation(); onAddToPlaylist(); }}
+          className={`absolute top-2 right-2 p-2 rounded-full transition-all z-10 shadow-lg ${
+            isInPlaylist 
+              ? 'bg-emerald-500 text-white opacity-100 scale-110' 
+              : 'bg-black/80 text-white opacity-100 md:opacity-0 md:group-hover:opacity-100 hover:bg-red-600'
+          }`}
+          title={isInPlaylist ? "Added to Playlist" : "Add to Playlist"}
+        >
+          {isInPlaylist ? <ShieldCheck size={20} /> : <Plus size={20} />}
+        </button>
+
         <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
           <div className="bg-white/20 backdrop-blur-md p-3 rounded-full">
             <PlaySquare size={32} fill="white" />
@@ -516,15 +1198,17 @@ const VideoCard: React.FC<{
           referrerPolicy="no-referrer"
           onClick={(e) => onChannelClick(e, video.channelName)}
         />
-        <div className="flex flex-col gap-1">
-          <h3 className="font-bold line-clamp-2 leading-tight text-[15px] group-hover:text-blue-400 transition-colors" dangerouslySetInnerHTML={{ __html: video.title }} />
-          <p 
-            className="text-sm text-white/60 mt-1 hover:text-white transition-colors cursor-pointer"
-            onClick={(e) => onChannelClick(e, video.channelName)}
-          >
-            {video.channelName}
-          </p>
-          <p className="text-sm text-white/60">
+        <div className="flex flex-col gap-1 flex-1">
+          <h3 className="font-bold line-clamp-2 leading-tight text-sm sm:text-[15px] group-hover:text-blue-400 transition-colors" dangerouslySetInnerHTML={{ __html: video.title }} />
+          <div className="flex items-center justify-between">
+            <p 
+              className="text-xs sm:text-sm text-white/60 mt-0.5 sm:mt-1 hover:text-white transition-colors cursor-pointer"
+              onClick={(e) => onChannelClick(e, video.channelName)}
+            >
+              {video.channelName}
+            </p>
+          </div>
+          <p className="text-[10px] sm:text-sm text-white/60">
             {video.views} • {video.postedAt}
           </p>
         </div>

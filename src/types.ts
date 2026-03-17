@@ -1,3 +1,5 @@
+import { GoogleGenAI, Type } from "@google/genai";
+
 export interface Channel {
   id: string;
   title: string;
@@ -15,6 +17,7 @@ export interface Video {
   thumbnail: string;
   videoUrl: string;
   channelName: string;
+  channelId: string;
   channelAvatar: string;
   views: string;
   postedAt: string;
@@ -54,6 +57,10 @@ const formatCount = (count: string): string => {
 
 export const getYouTubeVideos = async (query: string = 'trending', apiKey: string): Promise<{ videos: Video[], channel?: Channel, error?: string }> => {
   try {
+    if (!apiKey) {
+      return { videos: [], error: 'API Key missing' };
+    }
+
     // Step 1: Search for both videos and channels to find the best match
     const searchResponse = await fetch(
       `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=50&q=${encodeURIComponent(query)}&type=video,channel&key=${apiKey}`
@@ -161,6 +168,7 @@ export const getYouTubeVideos = async (query: string = 'trending', apiKey: strin
         thumbnail: item.snippet.thumbnails.high?.url || item.snippet.thumbnails.default?.url,
         videoUrl: `https://www.youtube-nocookie.com/embed/${item.id}`,
         channelName: item.snippet.channelTitle,
+        channelId: item.snippet.channelId,
         channelAvatar: channelAvatars[item.snippet.channelId] || `https://picsum.photos/seed/${item.snippet.channelId}/40/40`,
         views: formatViews(item.statistics.viewCount),
         postedAt: new Date(item.snippet.publishedAt).toLocaleDateString(),
@@ -178,5 +186,194 @@ export const getYouTubeVideos = async (query: string = 'trending', apiKey: strin
   } catch (error) {
     console.error("Error fetching YouTube videos:", error);
     return { videos: [], error: error instanceof Error ? error.message : "Network Error" };
+  }
+};
+
+export const getChannelVideos = async (channelId: string, apiKey: string): Promise<{ videos: Video[], error?: string }> => {
+  try {
+    if (!apiKey) return { videos: [] };
+
+    const response = await fetch(
+      `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channelId}&maxResults=20&order=date&type=video&key=${apiKey}`
+    );
+    const data = await response.json();
+
+    if (data.error) {
+      return { videos: [], error: data.error.message };
+    }
+
+    const videoIds = data.items.map((item: any) => item.id.videoId).join(',');
+
+    // Get detailed info
+    const detailsResponse = await fetch(
+      `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id=${videoIds}&key=${apiKey}`
+    );
+    const detailsData = await detailsResponse.json();
+
+    // Get channel avatar
+    const channelResponse = await fetch(
+      `https://www.googleapis.com/youtube/v3/channels?part=snippet&id=${channelId}&key=${apiKey}`
+    );
+    const channelData = await channelResponse.json();
+    const avatar = channelData.items?.[0]?.snippet?.thumbnails?.default?.url || '';
+
+    const videos = detailsData.items.map((item: any) => ({
+      id: item.id,
+      title: item.snippet.title,
+      thumbnail: item.snippet.thumbnails.high?.url || item.snippet.thumbnails.default?.url,
+      videoUrl: `https://www.youtube-nocookie.com/embed/${item.id}`,
+      channelName: item.snippet.channelTitle,
+      channelId: item.snippet.channelId,
+      channelAvatar: avatar,
+      views: formatViews(item.statistics.viewCount),
+      postedAt: new Date(item.snippet.publishedAt).toLocaleDateString(),
+      duration: formatDuration(item.contentDetails.duration),
+      description: item.snippet.description
+    }));
+
+    return { videos };
+  } catch (error) {
+    console.error("Error fetching channel videos:", error);
+    return { videos: [], error: error instanceof Error ? error.message : "Network Error" };
+  }
+};
+
+export const getChannelDetails = async (channelId: string, apiKey: string): Promise<Channel | null> => {
+  try {
+    if (!apiKey) return null;
+
+    const response = await fetch(
+      `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,brandingSettings&id=${channelId}&key=${apiKey}`
+    );
+    const data = await response.json();
+
+    if (data.error || !data.items || data.items.length === 0) return null;
+
+    const item = data.items[0];
+    return {
+      id: item.id,
+      title: item.snippet.title,
+      customUrl: item.snippet.customUrl || '',
+      description: item.snippet.description,
+      thumbnail: item.snippet.thumbnails.high?.url || item.snippet.thumbnails.default?.url,
+      banner: item.brandingSettings.image?.bannerExternalUrl || '',
+      subscriberCount: formatCount(item.statistics.subscriberCount),
+      videoCount: item.statistics.videoCount
+    };
+  } catch (error) {
+    console.error("Error fetching channel details:", error);
+    return null;
+  }
+};
+
+const enrichWithGemini = async (videoId: string): Promise<Partial<Video> | null> => {
+  try {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      console.warn("GEMINI_API_KEY is missing. Enrichment disabled.");
+      return null;
+    }
+
+    const ai = new GoogleGenAI({ apiKey });
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: `Search for YouTube video ID "${videoId}" and extract its metadata.
+      Return a JSON object with:
+      - title: The exact video title.
+      - channelName: The name of the channel that uploaded it.
+      - duration: The video duration (e.g., "4:15" or "1:20:30").
+      - views: Total view count formatted (e.g., "1.2M views" or "45K views").
+      - postedAt: The upload date formatted (e.g., "Mar 15, 2024" or "2 days ago").
+      - description: A brief summary of the video.`,
+      config: {
+        tools: [{ googleSearch: {} }],
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            title: { type: Type.STRING },
+            channelName: { type: Type.STRING },
+            duration: { type: Type.STRING },
+            views: { type: Type.STRING },
+            postedAt: { type: Type.STRING },
+            description: { type: Type.STRING }
+          },
+          required: ["title", "channelName", "duration", "views", "postedAt", "description"]
+        }
+      }
+    });
+
+    if (response.text) {
+      return JSON.parse(response.text);
+    }
+    return null;
+  } catch (error) {
+    console.error("Gemini enrichment error:", error);
+    return null;
+  }
+};
+
+export const getVideoDetails = async (videoId: string, apiKey: string): Promise<Video | null> => {
+  try {
+    // Try YouTube Data API first if key is available
+    if (apiKey) {
+      const response = await fetch(
+        `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id=${videoId}&key=${apiKey}`
+      );
+      const data = await response.json();
+
+      if (!data.error && data.items && data.items.length > 0) {
+        const item = data.items[0];
+
+        // Get channel avatar
+        const channelResponse = await fetch(
+          `https://www.googleapis.com/youtube/v3/channels?part=snippet&id=${item.snippet.channelId}&key=${apiKey}`
+        );
+        const channelData = await channelResponse.json();
+        const avatar = channelData.items?.[0]?.snippet?.thumbnails?.default?.url || '';
+
+        return {
+          id: item.id,
+          title: item.snippet.title,
+          thumbnail: item.snippet.thumbnails.high?.url || item.snippet.thumbnails.default?.url,
+          videoUrl: `https://www.youtube-nocookie.com/embed/${item.id}`,
+          channelName: item.snippet.channelTitle,
+          channelId: item.snippet.channelId,
+          channelAvatar: avatar,
+          views: formatViews(item.statistics.viewCount),
+          postedAt: new Date(item.snippet.publishedAt).toLocaleDateString(),
+          duration: formatDuration(item.contentDetails.duration),
+          description: item.snippet.description
+        };
+      }
+    }
+
+    // Fallback to Gemini Enrichment if API fails or key is missing
+    const geminiData = await enrichWithGemini(videoId);
+    
+    // Fallback to oEmbed (doesn't require API key) for basic info
+    const oEmbedResponse = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`);
+    if (oEmbedResponse.ok) {
+      const oEmbedData = await oEmbedResponse.json();
+      const channelName = geminiData?.channelName || oEmbedData.author_name || "YouTube";
+      return {
+        id: videoId,
+        title: geminiData?.title || oEmbedData.title || "Video dari Link",
+        thumbnail: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
+        videoUrl: `https://www.youtube-nocookie.com/embed/${videoId}`,
+        channelName: channelName,
+        channelId: "",
+        channelAvatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(channelName)}&background=random&color=fff`,
+        views: geminiData?.views || "Direct Play",
+        postedAt: geminiData?.postedAt || "Sekarang",
+        duration: geminiData?.duration || "--:--",
+        description: geminiData?.description || "Memutar langsung dari link."
+      };
+    }
+
+    return null;
+  } catch (error) {
+    console.error("Error fetching video details:", error);
+    return null;
   }
 };
